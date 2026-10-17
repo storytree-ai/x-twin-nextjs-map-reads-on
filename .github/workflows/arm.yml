@@ -1,0 +1,82 @@
+{
+  "name": "arm",
+  "on": {
+    "pull_request": {
+      "branches": [
+        "main"
+      ]
+    },
+    "merge_group": {},
+    "push": {
+      "branches": [
+        "main"
+      ]
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "jobs": {
+    "verify": {
+      "name": "verify",
+      "if": "github.event_name != 'push'",
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "uses": "actions/checkout@v4"
+        },
+        {
+          "name": "The arm's checks",
+          "run": "if [ -f ci/checks.sh ]; then bash ci/checks.sh; else echo \"No ci/checks.sh yet: the arm's lanes write the checks every pull request must pass.\"; fi"
+        }
+      ]
+    },
+    "automerge": {
+      "name": "automerge",
+      "needs": "verify",
+      "if": "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository",
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "name": "Enqueue",
+          "env": {
+            "GH_TOKEN": "${{ secrets.MERGE_QUEUE_TOKEN }}",
+            "PR": "${{ github.event.pull_request.number }}",
+            "SHA": "${{ github.event.pull_request.head.sha }}"
+          },
+          "run": "gh pr merge \"$PR\" --repo \"$GITHUB_REPOSITORY\" --auto --match-head-commit \"$SHA\""
+        }
+      ]
+    },
+    "hidden-tests": {
+      "name": "hidden-tests",
+      "if": "github.event_name == 'push'",
+      "environment": "hidden-tests",
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "uses": "actions/checkout@v4"
+        },
+        {
+          "name": "Fetch the hidden tests",
+          "uses": "actions/checkout@v4",
+          "with": {
+            "repository": "storytree-ai/x-twin-nextjs-tests",
+            "token": "${{ secrets.EXPERIMENT_TESTS_TOKEN }}",
+            "path": ".hidden-tests"
+          }
+        },
+        {
+          "name": "Run the verifier",
+          "env": {
+            "VERIFIER_COMMAND": "mkdir -p \"$RUNNER_TEMP/harbor-logs\"/verifier; docker build -q -t storytree-harbor-task \"$HIDDEN_TESTS/environment\" && timeout 3600s docker run --rm --network none -e NPM_CONFIG_OFFLINE=true -v \"$GITHUB_WORKSPACE:/app\" -v \"$HIDDEN_TESTS/tests:/tests:ro\" -v \"$RUNNER_TEMP/harbor-logs\":/logs storytree-harbor-task bash /tests/test.sh; node \"$HIDDEN_TESTS/counts.mjs\" \"$RUNNER_TEMP/harbor-logs\"/verifier > \"$VERIFIER_RESULT\"",
+            "HIDDEN_TESTS": "${{ github.workspace }}/.hidden-tests",
+            "VERIFIER_RESULT": "${{ runner.temp }}/verifier-result.json",
+            "REPORT_COUNTS": "const { spawnSync } = require(\"node:child_process\");\nconst fs = require(\"node:fs\");\nconst run = spawnSync(process.env.VERIFIER_COMMAND, { shell: true, stdio: \"ignore\" });\nlet line;\ntry {\n  const result = JSON.parse(fs.readFileSync(process.env.VERIFIER_RESULT, \"utf8\"));\n  line = \"passed=\" + Number(result.passed) + \" total=\" + Number(result.total);\n} catch {\n  line = \"The verifier wrote no result (exit \" + run.status + \").\";\n  process.exitCode = 1;\n}\nconsole.log(line);\nif (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, line + \"\\n\");"
+          },
+          "run": "node -e \"$REPORT_COUNTS\""
+        }
+      ]
+    }
+  }
+}
