@@ -233,9 +233,10 @@ export function pagesRouteKind(pathname) {
  * filesystem is matched after beforeFiles rewrites (static pages first),
  * then afterFiles, then dynamic pages, then fallback rewrites. Returns
  * { url, match } or null once the pipeline has answered. A request the App
- * Router's pipeline has already `routed` is only matched.
+ * Router's pipeline has already `routed` is only matched. A public file
+ * (`serveFile`) is served when a path names one after beforeFiles, afterFiles or fallback rewrites.
  */
-async function routeRequest(req, res, { url, pathname, isData }, routed) {
+async function routeRequest(req, res, { url, pathname, isData }, routed, serveFile) {
   if (routed) return { url: routed, match: matchPagesRoute(routes, routed.pathname) };
   let request = await runRequestPipeline(req, res, {
     pathname,
@@ -245,6 +246,7 @@ async function routeRequest(req, res, { url, pathname, isData }, routed) {
     loadMiddleware: manifest.loadMiddleware,
   });
   if (!request) return null;
+  if (!isData && serveFile && (await serveFile(request.url.pathname, req, res, request.status))) return null;
   let match = matchPagesRoute(routes, request.url.pathname);
   if (match && !match.route.isDynamic) return { url: request.url, match };
   for (const phase of ["afterFiles", "fallback"]) {
@@ -253,6 +255,7 @@ async function routeRequest(req, res, { url, pathname, isData }, routed) {
     if (rewritten === false) return null;
     if (rewritten) {
       request = rewritten;
+      if (!isData && serveFile && (await serveFile(request.url.pathname, req, res, request.status))) return null;
       match = matchPagesRoute(routes, request.url.pathname);
       if (match) break;
     }
@@ -273,7 +276,8 @@ function isrSeconds(revalidate) {
 /**
  * Handle a Node request for the Pages Router. Returns false when no page
  * route matched and the caller may try something else. `opts.routed`: the
- * URL the App Router's pipeline routed it to (req.url stays the browser's).
+ * URL the App Router's pipeline routed it to (req.url stays the browser's);
+ * `opts.serveFile`: answers for public files (server/static-files.js).
  */
 export async function handlePagesRequest(req, res, opts) {
   const parsed = parseRequest(req.url, opts.buildId);
@@ -285,7 +289,7 @@ export async function handlePagesRequest(req, res, opts) {
   const App = appMod?.default || null;
   const Document = documentMod?.default || null;
 
-  const routed = await routeRequest(req, res, parsed, opts.routed);
+  const routed = await routeRequest(req, res, parsed, opts.routed, opts.serveFile);
   if (!routed) return true;
   const { url, match } = routed;
   const pathname = url.pathname;

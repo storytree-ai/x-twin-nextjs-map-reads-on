@@ -38,7 +38,7 @@ const serverConfig = {
   redirects: [{ source: "/old", destination: "/about", permanent: true }],
   rewrites: {
     beforeFiles: [],
-    afterFiles: [{ source: "/after", destination: "/" }],
+    afterFiles: [{ source: "/after", destination: "/" }, { source: "/old-robots", destination: "/robots.txt" }],
     fallback: [{ source: "/to-pages", destination: "/legacy" }],
   },
 };
@@ -49,10 +49,12 @@ function makeEntry() {
     serverConfig,
     routeKind: (pathname) => (pathname === "/" || pathname === "/about" ? "static" : null),
     loadMiddleware: async () => ({
-      config: { matcher: ["/", "/about", "/rewrite-403", "/blocked", "/to-pages"] },
+      config: { matcher: ["/", "/about", "/rewrite-403", "/blocked", "/to-pages", "/files/:path*"] },
       middleware(request) {
         calls.middleware++;
         const { pathname } = request.nextUrl;
+        if (pathname === "/files/secret.txt") return new Response("Blocked", { status: 403 });
+        if (pathname === "/files/alias.txt") return NextResponse.rewrite(new URL("/files/real.txt", request.url));
         if (pathname === "/rewrite-403") return NextResponse.rewrite(new URL("/", request.url), { status: 403 });
         if (pathname === "/blocked") return new Response("Blocked", { status: 403 });
         const headers = new Headers(request.headers);
@@ -70,20 +72,28 @@ function makeEntry() {
   return { entry, calls };
 }
 
-async function run(url, { headers = {}, pagesRouteKind = () => null } = {}) {
+async function run(url, { headers = {}, pagesRouteKind = () => null, files = [] } = {}) {
   const { entry, calls } = makeEntry();
   const req = { method: "GET", url, headers: { host: "localhost:3000", ...headers } };
   const res = fakeRes();
   const pages = [];
+  const served = [];
   await handleAppRouterRequest(req, res, {
     entry,
     pagesRouteKind,
+    serveFile: async (pathname, _req, response, status) => {
+      if (!files.includes(pathname)) return false;
+      served.push(pathname);
+      response.statusCode = status || 200;
+      response.end("file");
+      return true;
+    },
     handlePages: async (r, _res, routed) => {
       pages.push(routed.pathname);
       res.end("pages");
     },
   });
-  return { res, calls, pages };
+  return { res, calls, pages, served };
 }
 
 test("an app page runs middleware once and renders with its request headers", async () => {
@@ -148,4 +158,40 @@ test("afterFiles rewrites apply before a dynamic pages/ route; a static pages/ r
   assert.equal(rewritten.calls.rendered[0].url, "http://localhost:3000/");
   const direct = await run("/legacy", { pagesRouteKind: dynamicPages });
   assert.deepEqual(direct.pages, ["/legacy"]);
+});
+
+test("a public file the matcher selects runs middleware, then is served", async () => {
+  const files = ["/files/real.txt", "/robots.txt"];
+  const real = await run("/files/real.txt", { files });
+  assert.equal(real.calls.middleware, 1);
+  assert.deepEqual(real.served, ["/files/real.txt"]);
+  assert.equal(real.calls.rendered.length, 0);
+  assert.equal(real.res.headers["x-both"], "middleware");
+  assert.equal(real.res.headers["x-config"], "config");
+  assert.equal(real.res.body, "file");
+
+  const blocked = await run("/files/secret.txt", { files: ["/files/secret.txt"] });
+  assert.deepEqual(blocked.served, []);
+  assert.equal(blocked.res.statusCode, 403);
+  assert.equal(blocked.res.body, "Blocked");
+
+  const alias = await run("/files/alias.txt", { files });
+  assert.deepEqual(alias.served, ["/files/real.txt"]);
+
+  const unmatched = await run("/robots.txt", { files });
+  assert.equal(unmatched.calls.middleware, 0);
+  assert.deepEqual(unmatched.served, ["/robots.txt"]);
+  assert.equal(unmatched.res.headers["x-config"], "config");
+});
+
+test("a public file named like an RSC payload is served as the file", async () => {
+  const { served, calls } = await run("/data.rsc", { files: ["/data.rsc"] });
+  assert.deepEqual(served, ["/data.rsc"]);
+  assert.equal(calls.rendered.length, 0);
+});
+
+test("an afterFiles rewrite to a public file serves the file", async () => {
+  const { served, calls } = await run("/old-robots", { files: ["/robots.txt"] });
+  assert.deepEqual(served, ["/robots.txt"]);
+  assert.equal(calls.rendered.length, 0);
 });
