@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nextShimAliases, NEXT_SHIMS, REACT_SERVER_SHIMS } from "./shims-map.js";
 import { transformCjs } from "./cjs.js";
+import { transformUseCache } from "./use-cache.js";
 import { findNextConfig, loadNextConfig } from "./next-config.js";
 import { fileToPattern, buildPagesRoutes, matchPagesRoute } from "../routing/pages-routes.js";
 import { buildAppRoutes, isAppFile, metadataFileOf } from "../routing/app-routes.js";
@@ -17,6 +18,7 @@ const ERROR_PAGE = path.join(distDir, "shared", "error-page.js");
 export const APP_RSC_ENTRY = path.join(distDir, "server", "app-router", "rsc-entry.js");
 export const APP_SSR_ENTRY = path.join(distDir, "server", "app-router", "ssr-entry.js");
 export const APP_CLIENT_ENTRY = path.join(distDir, "client", "app-entry.js");
+const USE_CACHE_RUNTIME = path.join(distDir, "shims", "internal", "data-cache.js");
 
 const PAGES_ENV = "vinext_pages";
 const APP_MANIFEST_ID = "virtual:vinext-app-manifest";
@@ -395,13 +397,24 @@ export default function vinext(options = {}) {
     },
   };
   if (!usesAppRouter) return plugin;
+  // "use cache" in server components and server code, once TypeScript and JSX are compiled away.
+  const useCache = {
+    name: "vinext:use-cache",
+    transform(code, id) {
+      if (this.environment?.name !== "rsc" || id.includes("/node_modules/") || id.startsWith("\0")) return null;
+      const file = id.split("?")[0];
+      if (!APP_CODE_RE.test(file) || !file.startsWith(root)) return null;
+      const out = transformUseCache(code, path.relative(root, file).split(path.sep).join("/"), { runtime: USE_CACHE_RUNTIME });
+      return out === null ? null : { code: out, map: null };
+    },
+  };
   const rsc = import("@vitejs/plugin-rsc").then(({ default: vitePluginRsc }) =>
     vitePluginRsc({
       entries: { rsc: APP_RSC_ENTRY, ssr: APP_SSR_ENTRY, client: APP_CLIENT_ENTRY },
       serverHandler: false,
     }),
   );
-  return [plugin, rsc];
+  return [plugin, useCache, rsc];
 }
 
 /** The browser URL of the client entry during dev. */
