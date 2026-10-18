@@ -9,6 +9,7 @@ import { fileToPattern, buildPagesRoutes, matchPagesRoute } from "../routing/pag
 import { buildAppRoutes, isAppFile, metadataFileOf } from "../routing/app-routes.js";
 import { staticFileInfo } from "../server/app-router/metadata-routes.js";
 import { normalizeRewrites } from "../server/request-pipeline.js";
+import { createStaticFileServer } from "../server/static-files.js";
 
 const distDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const SHIMS_DIR = path.join(distDir, "shims");
@@ -362,6 +363,7 @@ export default function vinext(options = {}) {
       server.watcher.on("add", invalidateManifest);
       server.watcher.on("unlink", invalidateManifest);
 
+      const serveFile = createStaticFileServer([path.join(root, "public")]);
       server.middlewares.use(async (req, res, next) => {
         if (!isPageRequest(req, root)) return next();
         const handlePages = async (request, response, routed) => {
@@ -372,6 +374,7 @@ export default function vinext(options = {}) {
             clientEntryUrl: clientEntryUrl(root),
             transformHtml: (url, html) => server.transformIndexHtml(url, html),
             routed,
+            serveFile,
           });
         };
         try {
@@ -380,7 +383,7 @@ export default function vinext(options = {}) {
           if (appDir && !(req.url || "/").startsWith("/_next/")) {
             const { handleAppRouterRequest } = await import("../server/app-router/index.js");
             const entry = await server.environments.rsc.runner.import(APP_RSC_ENTRY);
-            await handleAppRouterRequest(req, res, { entry, pagesRouteKind, handlePages });
+            await handleAppRouterRequest(req, res, { entry, pagesRouteKind, handlePages, serveFile });
             return;
           }
           await handlePages(req, res);
@@ -424,9 +427,9 @@ function clientEntryUrl(root) {
 }
 
 /**
- * Requests the framework renders, as opposed to Vite's modules and assets:
- * a path with a dot in its last segment is a page unless a file (in the root
- * or public/) answers to it.
+ * Requests the framework handles, as opposed to Vite's modules and assets:
+ * a path with a dot in its last segment is a page or a public/ file unless a
+ * file in the root answers to it.
  */
 export function isPageRequest(req, root = process.cwd()) {
   const url = req.url || "/";
@@ -440,5 +443,7 @@ export function isPageRequest(req, root = process.cwd()) {
   try {
     decoded = decodeURIComponent(pathname);
   } catch {}
-  return ![root, path.join(root, "public")].some((dir) => fs.existsSync(path.join(dir, decoded)));
+  // public/ files go through the pipeline too: middleware may select them.
+  if (fs.existsSync(path.join(root, "public", decoded))) return true;
+  return !fs.existsSync(path.join(root, decoded));
 }

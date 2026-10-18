@@ -75,9 +75,11 @@ function isClientRscFetch(req, isRsc) {
  * are not dynamic, afterFiles rewrites, dynamic routes, fallback rewrites.
  * `entry` is the rsc entry module; `pagesRouteKind(pathname)` ("static",
  * "dynamic" or null) and `handlePages(req, res, url)` hand pages/ routes to the Pages Router, whose own
- * pipeline is skipped for a request routed here.
+ * pipeline is skipped for a request routed here. `serveFile(pathname, req,
+ * res, status)` answers for a public file (see server/static-files.js),
+ * checked once beforeFiles rewrites have run.
  */
-export async function handleAppRouterRequest(req, res, { entry, pagesRouteKind = () => null, handlePages }) {
+export async function handleAppRouterRequest(req, res, { entry, pagesRouteKind = () => null, handlePages, serveFile }) {
   const rawUrl = req.originalUrl || req.url || "/";
   const query = rawUrl.indexOf("?");
   const rawPath = query === -1 ? rawUrl : rawUrl.slice(0, query);
@@ -94,6 +96,7 @@ export async function handleAppRouterRequest(req, res, { entry, pagesRouteKind =
     loadMiddleware: entry.loadMiddleware,
   });
   if (!request) return true;
+  if (serveFile && (await serveFile(request.url.pathname, req, res, request.status))) return true;
 
   // A static route of either router before a dynamic one; app/ first.
   const routeOf = (p) => {
