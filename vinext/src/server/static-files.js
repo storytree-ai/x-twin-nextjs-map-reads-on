@@ -51,7 +51,6 @@ export function createStaticFileServer(dirs) {
     if (!file) return false;
     res.statusCode = status || 200;
     res.setHeader("Content-Type", MIME[path.extname(file)] || "application/octet-stream");
-    if (pathname.startsWith("/assets/")) res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
     if (req.method === "HEAD") res.end();
     else fs.createReadStream(file).pipe(res);
     return true;

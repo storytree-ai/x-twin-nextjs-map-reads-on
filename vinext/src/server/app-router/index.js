@@ -96,7 +96,9 @@ export async function handleAppRouterRequest(req, res, { entry, pagesRouteKind =
     loadMiddleware: entry.loadMiddleware,
   });
   if (!request) return true;
-  if (serveFile && (await serveFile(request.url.pathname, req, res, request.status))) return true;
+  // A public file is looked up by the browser's path, ".rsc" and all, unless rewritten.
+  const filePath = isRsc && request.url.pathname === pathname ? rawPath : request.url.pathname;
+  if (serveFile && (await serveFile(filePath, req, res, request.status))) return true;
 
   // A static route of either router before a dynamic one; app/ first.
   const routeOf = (p) => {

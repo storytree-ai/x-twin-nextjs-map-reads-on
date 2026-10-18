@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { parseArgs, isBuiltAsset } from "../src/cli.js";
+import { parseArgs, builtAssets } from "../src/cli.js";
 import { createStaticFileServer } from "../src/server/static-files.js";
 import { isPageRequest, generatePagesManifest } from "../src/plugin/index.js";
 
@@ -85,8 +85,18 @@ test("the static file server serves a file under its dirs with the given status,
 });
 
 test("vinext start serves Vite's built chunks directly and public files through the pipeline", () => {
-  assert.equal(isBuiltAsset("/assets/index-abc123.js"), true);
-  assert.equal(isBuiltAsset("/.vite/manifest.json"), true);
-  assert.equal(isBuiltAsset("/robots.txt"), false);
-  assert.equal(isBuiltAsset("/assets-not/x.js"), false);
+  const clientDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-client-"));
+  fs.mkdirSync(path.join(clientDir, ".vite"));
+  const manifest = {
+    "virtual:vinext-client": { file: "assets/index-abc.js", isEntry: true, css: ["assets/index-def.css"], imports: ["_shared"] },
+    _shared: { file: "assets/shared-123.js", assets: ["assets/logo-456.png"] },
+  };
+  fs.writeFileSync(path.join(clientDir, ".vite", "manifest.json"), JSON.stringify(manifest));
+  const built = builtAssets(clientDir);
+  for (const p of ["/assets/index-abc.js", "/assets/index-def.css", "/assets/shared-123.js", "/assets/logo-456.png", "/.vite/manifest.json"]) {
+    assert.equal(built.has(p), true, p);
+  }
+  // A public/assets/ copy is not Vite's: middleware may select it.
+  assert.equal(built.has("/assets/from-public.png"), false);
+  assert.equal(built.has("/robots.txt"), false);
 });

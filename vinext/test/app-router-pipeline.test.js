@@ -183,3 +183,9 @@ test("a public file the matcher selects runs middleware, then is served", async 
   assert.deepEqual(unmatched.served, ["/robots.txt"]);
   assert.equal(unmatched.res.headers["x-config"], "config");
 });
+
+test("a public file named like an RSC payload is served as the file", async () => {
+  const { served, calls } = await run("/data.rsc", { files: ["/data.rsc"] });
+  assert.deepEqual(served, ["/data.rsc"]);
+  assert.equal(calls.rendered.length, 0);
+});
