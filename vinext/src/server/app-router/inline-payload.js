@@ -50,7 +50,9 @@ export function injectPayload(htmlStream, rscStream, { nonce } = {}) {
     new TransformStream({
       transform(chunk, controller) {
         html += decoder.decode(chunk, { stream: true });
-        scheduled ??= new Promise((resolve) => setTimeout(resolve, 0)).then(() => emit(controller));
+        // Enqueueing throws if the stream was cancelled or errored meanwhile
+        // (the client left); nothing is left to send then.
+        scheduled ??= new Promise((resolve) => setTimeout(resolve, 0)).then(() => emit(controller)).catch(() => {});
       },
       async flush(controller) {
         await scheduled;

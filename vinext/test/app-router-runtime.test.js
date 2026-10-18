@@ -58,6 +58,29 @@ test("the RSC payload is not inlined between chunks React writes in one flush", 
   assert.ok(out.endsWith("</body></html>"));
 });
 
+test("a client leaving before held HTML is sent does not fail the server", async () => {
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const html = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("<!DOCTYPE html><html><body>"));
+      },
+    });
+    const reader = injectPayload(html, streamOf([])).getReader();
+    const read = reader.read();
+    // Let the chunk reach the transform; its HTML is held until a timer fires.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    await reader.cancel();
+    await read;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("notFound/forbidden/redirect throw errors recognised by digest", () => {
   const caught = (fn) => {
     try {
