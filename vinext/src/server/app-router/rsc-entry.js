@@ -18,7 +18,8 @@ import serverConfig from "virtual:vinext-server-config";
 import { matchAppRoute } from "../../routing/app-routes.js";
 import { ErrorBoundary, HttpFallbackBoundary, RedirectBoundary, LayoutSegments } from "../../client/app-boundaries.js";
 import { httpFallbackStatus, redirectInfo, isNavigationError } from "../../shims/internal/navigation-errors.js";
-import { resolveMetadata, renderMetadata } from "./metadata.js";
+import { renderHead } from "./metadata.js";
+import { metadataRouteResponse } from "./metadata-routes.js";
 import { parseRscPath } from "../../shared/rsc-url.js";
 import { callRouteHandler } from "./route-handler.js";
 import { createInstrumentation } from "../instrumentation.js";
@@ -152,23 +153,28 @@ async function pageElement(route, params, searchParams) {
   return createElement(Page, { params: thenable(params), searchParams: thenable(searchParamsObject(searchParams)) });
 }
 
-async function headElements(levels, last, leafMod, params, searchParams) {
-  const mods = await Promise.all(levels.slice(0, last + 1).map((l) => load(l.layout)));
-  if (leafMod) mods.push(leafMod);
-  const metadata = await resolveMetadata(mods.filter(Boolean), {
-    params: thenable(params),
-    searchParams: thenable(searchParamsObject(searchParams)),
+async function headElements(levels, last, leafMod, params, url, { noindex = false } = {}) {
+  return renderHead(levels, last, leafMod, {
+    params,
+    props: { params: thenable(params), searchParams: thenable(searchParamsObject(url.searchParams)) },
+    origin: url.origin,
+    load,
+    noindex,
   });
-  return renderMetadata(metadata);
+}
+
+/** Throws a metadata error where the page renders, for the segment's error boundary. */
+function MetadataError({ error }) {
+  throw error;
 }
 
 /** Root-level tree for URLs no route matches. */
-async function notFoundTree(pathname) {
+async function notFoundTree(url) {
   const levels = [root];
   const mod = await load(root.notFound);
   const element = mod ? createElement(mod.default) : defaultFallback(404);
-  const head = await headElements(levels, 0, null, {}, new URLSearchParams());
-  const tree = await buildTree(levels, {}, null, { fallback: { level: 0, element: withHead(head, element) }, pathname });
+  const head = await headElements(levels, 0, mod, {}, url, { noindex: true });
+  const tree = await buildTree(levels, {}, null, { fallback: { level: 0, element: withHead(head, element) }, pathname: url.pathname });
   return root.layout ? tree : createElement("html", null, createElement("body", null, tree));
 }
 
@@ -181,7 +187,14 @@ async function routeTree(match, url) {
   const { route, params } = match;
   const leaf = await pageElement(route, params, url.searchParams);
   const leafMod = await load(route.file);
-  const head = await headElements(route.levels, route.levels.length - 1, leafMod, params, url.searchParams);
+  let head;
+  try {
+    head = await headElements(route.levels, route.levels.length - 1, leafMod, params, url);
+  } catch (error) {
+    // notFound()/redirect() from generateMetadata act as the page's own would.
+    if (isNavigationError(error)) throw error;
+    return buildTree(route.levels, params, createElement(MetadataError, { error }), { pathname: url.pathname });
+  }
   return buildTree(route.levels, params, withHead(head, leaf), { pathname: url.pathname });
 }
 
@@ -197,7 +210,7 @@ async function fallbackTree(match, url, status, below) {
   const file = route.levels[level][key];
   const mod = await load(file);
   const element = mod ? createElement(mod.default) : defaultFallback(status);
-  const head = await headElements(route.levels, level, null, params, url.searchParams);
+  const head = await headElements(route.levels, level, mod, params, url, { noindex: status === 404 });
   const tree = await buildTree(route.levels, params, null, { fallback: { level, element: withHead(head, element) }, pathname: url.pathname });
   return { tree, level };
 }
@@ -258,7 +271,7 @@ async function renderPage(url, isRsc, match, report, action = {}) {
     try {
       let tree;
       if (fallbackStatus === null) {
-        tree = match ? await routeTree(match, url) : await notFoundTree(url.pathname);
+        tree = match ? await routeTree(match, url) : await notFoundTree(url);
       } else {
         const fallback = await fallbackTree(match, url, fallbackStatus, below);
         tree = fallback.tree;
@@ -342,6 +355,16 @@ async function handleAction(ctx, url, isRsc, match, report) {
   return renderPage(url, isRsc, match, report, { payload: { formState: result.formState } });
 }
 
+async function handleMetadataRoute(request, match) {
+  try {
+    return await metadataRouteResponse(await load(match.route.file), match);
+  } catch (error) {
+    console.error(error);
+    reportRequestError(error, request, match.route, "route");
+    return new Response("Internal Server Error", { status: 500, headers: { "Content-Type": "text/plain" } });
+  }
+}
+
 async function handleRoute(request, match) {
   const mod = await load(match.route.file);
   const onError = (error) => reportRequestError(error, request, match.route, "route");
@@ -376,9 +399,9 @@ export default async function handler(request) {
   const pageUrl = new URL(url);
   pageUrl.pathname = pathname;
   const match = matchAppRoute(routes, pathname);
-  if (match && match.route.type === "route") {
+  if (match && (match.route.type === "route" || match.route.type === "metadata")) {
     if (isRsc) return new Response(null, { status: 200, headers: { "x-vinext-reload": "1" } });
-    return handleRoute(request, match);
+    return match.route.type === "route" ? handleRoute(request, match) : handleMetadataRoute(request, match);
   }
   const isAction = actionRequestKind(request) !== null;
   const ctx = createRequestContext(request, { phase: isAction ? "action" : "render" });

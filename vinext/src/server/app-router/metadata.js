@@ -1,47 +1,57 @@
 /**
- * The metadata the App Router renders into <head>: `metadata` and
- * `generateMetadata` merged root to leaf (title templates included). The
- * full Metadata API lands with its own increment; this covers title and
- * description.
+ * The head the App Router renders for a route: its segments' metadata and
+ * viewport (metadata-resolve.js) and their file-convention icons and images,
+ * as React elements React hoists into <head>.
  */
 import { createElement, Fragment } from "react";
+import { interpolatePattern } from "../../routing/pages-routes.js";
+import { resolveMetadata, resolveViewport, metadataTags, viewportTags, fileMetadata } from "./metadata-resolve.js";
 
-function titleOf(value, template) {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value === "string") return template ? template.replace("%s", value) : value;
-  if (typeof value === "object") {
-    if (typeof value.absolute === "string") return value.absolute;
-    if (typeof value.default === "string") return value.default;
+/**
+ * The file-convention entries of one level for `fileMetadata`: hrefs filled
+ * from the params, each file's type, size and alt from its static info or
+ * its module's exports (generateImageMetadata giving one entry per id).
+ */
+async function levelFiles(level, params, load) {
+  const entries = [];
+  for (const { kind, file, href: pattern, isStatic } of level.metadataFiles || []) {
+    const href = interpolatePattern(pattern, params)?.path;
+    if (!href) continue;
+    const mod = await load(file);
+    if (kind === "manifest") entries.push({ kind, href, info: {} });
+    else if (isStatic) entries.push({ kind, href, info: mod.info });
+    else if (typeof mod.generateImageMetadata === "function") {
+      for (const image of (await mod.generateImageMetadata({ params: Promise.resolve(params) })) || []) {
+        entries.push({ kind, href: `${href}/${image.id}`, info: imageInfo(image, mod) });
+      }
+    } else entries.push({ kind, href, info: imageInfo(mod, mod) });
   }
-  return undefined;
+  return fileMetadata(entries);
 }
 
-/** Merge the metadata of modules ordered root layout first, page last. */
-export async function resolveMetadata(mods, props) {
-  let title;
-  let template = null;
-  let description;
-  for (const mod of mods) {
-    let md = mod.metadata;
-    if (typeof mod.generateMetadata === "function") md = await mod.generateMetadata(props, Promise.resolve({ title, description }));
-    if (!md || typeof md !== "object") continue;
-    if (md.title !== undefined) {
-      const next = titleOf(md.title, template);
-      if (next !== undefined) title = next;
-      if (md.title && typeof md.title === "object" && typeof md.title.template === "string") template = md.title.template;
-    }
-    if (md.description !== undefined) description = md.description;
-  }
-  return { title, description };
+function imageInfo(source, mod) {
+  const size = source.size || mod.size;
+  return { contentType: source.contentType || mod.contentType || "image/png", width: size?.width, height: size?.height, alt: source.alt ?? mod.alt };
 }
 
-export function renderMetadata({ title, description }) {
+/**
+ * Head elements for the route levels 0..last and the leaf module (a page or
+ * a not-found boundary). `noindex` adds the robots tag a not-found page gets.
+ */
+export async function renderHead(levels, last, leafMod, { params, props, origin, load, noindex = false }) {
+  const segments = await Promise.all(
+    levels.slice(0, last + 1).map(async (level) => ({ mod: await load(level.layout), files: await levelFiles(level, params, load) })),
+  );
+  if (leafMod) segments.push({ mod: leafMod });
+  const metadata = await resolveMetadata(segments, props, { origin });
+  const viewport = await resolveViewport(
+    segments.map((s) => s.mod),
+    props,
+  );
+  const tags = [["meta", { charSet: "utf-8" }], ...(noindex ? [["meta", { name: "robots", content: "noindex" }]] : []), ...viewportTags(viewport), ...metadataTags(metadata)];
   return createElement(
     Fragment,
     null,
-    createElement("meta", { charSet: "utf-8" }),
-    createElement("meta", { name: "viewport", content: "width=device-width, initial-scale=1" }),
-    title !== undefined ? createElement("title", null, title) : null,
-    description ? createElement("meta", { name: "description", content: description }) : null,
+    tags.map(([tag, attrs, text], i) => createElement(tag, { key: i, ...attrs }, text)),
   );
 }

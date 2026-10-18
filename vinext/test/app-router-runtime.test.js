@@ -80,6 +80,13 @@ test("the app manifest lists routes and a loader for every file they name", () =
   assert.ok(!src.includes("counter.tsx"), "plain modules get no loader");
 });
 
+test("the app manifest loads metadata routes: modules as they are, static files through a virtual module", () => {
+  const src = generateAppManifest("/app/app", ["layout.tsx", "page.tsx", "robots.ts", "icon.png", "about/page.tsx", "about/opengraph-image.tsx"]);
+  assert.match(src, /"robots.ts": \(\) => import\("\/app\/app\/robots.ts"\)/);
+  assert.match(src, /"about\/opengraph-image.tsx": \(\) => import\("\/app\/app\/about\/opengraph-image.tsx"\)/);
+  assert.match(src, /"icon.png": \(\) => import\("virtual:vinext-metadata-file:\/app\/app\/icon.png"\)/);
+});
+
 test("a request path starting with // stays a path on the request's host", async () => {
   const { toWebRequest } = await import("../src/server/app-router/index.js");
   const request = toWebRequest({ url: "//example.com/x?y=1", method: "GET", headers: { host: "localhost:3000" } });
