@@ -6,9 +6,10 @@
  *   async function f(a) { "use cache"; BODY }
  *   async function f(a) { "use cache"; return __vinext_useCache(ID, async () => { BODY }, arguments); }
  *
- * The transform only inserts text, after a scan that knows strings,
- * comments, templates and regular expressions, so code it does not touch
- * keeps its positions.
+ * An arrow function, which has no `arguments`, takes its arguments as
+ * `...__vinext_args` and passes them to an inner arrow with its parameters.
+ * The transform edits text after a scan that knows strings, comments,
+ * templates and regular expressions.
  */
 
 const DIRECTIVE_RE = /^use cache(?::\s*[\w-]+)?$/;
@@ -183,47 +184,28 @@ function matchBackward(tokens, close) {
 }
 
 /**
- * How the function whose body opens at token `brace` gets its arguments
- * (an expression), or null when the brace opens no function body.
+ * The function whose body opens at token `brace`: { kind: "function" } (its
+ * arguments are `arguments`), { kind: "arrow", open, close } (the tokens
+ * around its parameters), { kind: "arrow-name", name }, or null when the
+ * brace opens no function body.
  */
-function functionArgs(code, tokens, brace) {
+function functionShape(tokens, brace) {
   const prev = tokens[brace - 1];
   if (!prev || prev.type !== "punct") return null;
   if (prev.value === "=>") {
     const before = tokens[brace - 2];
     if (!before) return null;
-    if (before.type === "name") return `[${before.value}]`;
+    if (before.type === "name") return { kind: "arrow-name", name: before.value };
     if (before.value !== ")") return null;
     const open = matchBackward(tokens, brace - 2);
-    if (open < 0) return null;
-    return `[${arrowParamNames(code.slice(tokens[open].end, before.start)).join(", ")}]`;
+    return open < 0 ? null : { kind: "arrow", open, close: brace - 2 };
   }
   if (prev.value !== ")") return null;
   const open = matchBackward(tokens, brace - 1);
   if (open <= 0) return null;
   const head = tokens[open - 1];
   if (head.type === "name" && NOT_FUNCTION_HEADS.has(head.value)) return null;
-  return "arguments";
-}
-
-/** The values an arrow function's parameter list binds, as expressions (simple names and rest only). */
-function arrowParamNames(params) {
-  const out = [];
-  let depth = 0;
-  let current = "";
-  const flush = () => {
-    const m = /^\s*(\.\.\.)?\s*([A-Za-z_$][\w$]*)\s*(?:=[\s\S]*)?$/.exec(current);
-    if (m) out.push(`${m[1] || ""}${m[2]}`);
-    current = "";
-  };
-  for (const ch of params) {
-    if ("([{".includes(ch)) depth++;
-    else if (")]}".includes(ch)) depth--;
-    if (ch === "," && depth === 0) flush();
-    else current += ch;
-  }
-  if (current.trim()) flush();
-  return out;
+  return { kind: "function" };
 }
 
 function hash(text) {
@@ -239,33 +221,70 @@ function afterStatement(tokens, k) {
   return tokens[k + 1]?.value === ";" ? k + 1 : k;
 }
 
-/** Body braces of the functions a module exports by declaration. */
+/** The body brace of a function expression or declaration starting at token `j`, or -1. */
+function functionBodyAt(tokens, j) {
+  if (tokens[j]?.value === "async") j++;
+  if (tokens[j]?.value === "function") {
+    j++;
+    if (tokens[j]?.value === "*") j++;
+    if (tokens[j]?.type === "name") j++;
+    if (tokens[j]?.value !== "(") return -1;
+    j = matchForward(tokens, j) + 1;
+  } else if (tokens[j]?.value === "(") {
+    j = matchForward(tokens, j) + 1;
+    if (tokens[j]?.value !== "=>") return -1;
+    j++;
+  } else if (tokens[j]?.type === "name" && tokens[j + 1]?.value === "=>") {
+    j += 2;
+  } else return -1;
+  return j > 0 && tokens[j]?.value === "{" ? j : -1;
+}
+
+/** Body braces of the functions a module exports, by declaration or by name. */
 function exportedFunctionBodies(tokens) {
   const bodies = [];
+  const names = new Set();
+  const isName = (t, value) => t?.type === "name" && t.value === value;
   for (let k = 0; k < tokens.length; k++) {
-    if (tokens[k].type !== "name" || tokens[k].value !== "export") continue;
+    if (!isName(tokens[k], "export") || tokens[k - 1]?.value === ".") continue;
     let j = k + 1;
-    if (tokens[j]?.value === "default") j++;
+    if (tokens[j]?.value === "{") {
+      // export { a, b as c } (not a re-export from another module)
+      const close = matchForward(tokens, j);
+      if (close < 0 || isName(tokens[close + 1], "from")) continue;
+      for (let m = j + 1; m < close; m++) {
+        if (tokens[m].type === "name" && tokens[m - 1].value !== "as") names.add(tokens[m].value);
+      }
+      continue;
+    }
+    if (isName(tokens[j], "default")) {
+      j++;
+      const t = tokens[j];
+      if (t?.type === "name" && !["async", "function", "class"].includes(t.value) && tokens[j + 1]?.value !== "=>") {
+        names.add(t.value);
+        continue;
+      }
+    }
     if (["const", "let", "var"].includes(tokens[j]?.value)) {
       j += 2; // binding name
       if (tokens[j]?.value !== "=") continue;
       j++;
     }
-    if (tokens[j]?.value === "async") j++;
-    if (tokens[j]?.value === "function") {
-      j++;
-      if (tokens[j]?.value === "*") j++;
-      if (tokens[j]?.type === "name") j++;
-      if (tokens[j]?.value !== "(") continue;
-      j = matchForward(tokens, j) + 1;
-    } else if (tokens[j]?.value === "(") {
-      j = matchForward(tokens, j) + 1;
-      if (tokens[j]?.value !== "=>") continue;
-      j++;
-    } else if (tokens[j]?.type === "name" && tokens[j + 1]?.value === "=>") {
-      j += 2;
-    } else continue;
-    if (j > 0 && tokens[j]?.value === "{") bodies.push(j);
+    const brace = functionBodyAt(tokens, j);
+    if (brace >= 0) bodies.push(brace);
+  }
+  if (names.size === 0) return bodies;
+  // Local functions exported by name: function NAME(…) {…} and const NAME = <function>.
+  for (let k = 0; k < tokens.length; k++) {
+    const t = tokens[k];
+    if (t.type !== "name" || tokens[k - 1]?.value === ".") continue;
+    let brace = -1;
+    if (t.value === "function" && names.has(tokens[k + 1]?.value)) {
+      brace = functionBodyAt(tokens, isName(tokens[k - 1], "async") ? k - 1 : k);
+    } else if (["const", "let", "var"].includes(t.value) && names.has(tokens[k + 1]?.value) && tokens[k + 2]?.value === "=") {
+      brace = functionBodyAt(tokens, k + 3);
+    }
+    if (brace >= 0) bodies.push(brace);
   }
   return bodies;
 }
@@ -293,7 +312,7 @@ export function transformUseCache(code, id, { runtime = "vinext/use-cache-runtim
   const bodies = new Map();
   for (let k = 1; k < tokens.length; k++) {
     if (!isDirective(tokens[k]) || tokens[k - 1].value !== "{" || tokens[k - 1].type !== "punct") continue;
-    if (functionArgs(code, tokens, k - 1) === null) continue;
+    if (functionShape(tokens, k - 1) === null) continue;
     bodies.set(k - 1, afterStatement(tokens, k));
   }
   if (fileLevel) {
@@ -301,29 +320,40 @@ export function transformUseCache(code, id, { runtime = "vinext/use-cache-runtim
   }
   if (bodies.size === 0) return null;
 
-  const inserts = [];
+  // Edits: insert `text` at `at`, replacing up to `end` when given.
+  const edits = [];
   let index = 0;
   for (const [brace, lead] of [...bodies].sort((a, b) => a[0] - b[0])) {
     const close = matchForward(tokens, brace);
-    if (close < 0) continue;
-    const args = functionArgs(code, tokens, brace);
-    if (args === null) continue;
+    const shape = functionShape(tokens, brace);
+    if (close < 0 || shape === null) continue;
     const bodyStart = tokens[lead].end;
     const bodyEnd = tokens[close].start;
-    const fnId = `${id}#${index++}:${hash(code.slice(bodyStart, bodyEnd))}`;
-    inserts.push({ at: bodyStart, text: ` return __vinext_useCache(${JSON.stringify(fnId)}, async () => {` });
-    inserts.push({ at: bodyEnd, text: `}, ${args}); ` });
+    const call = `__vinext_useCache(${JSON.stringify(`${id}#${index++}:${hash(code.slice(bodyStart, bodyEnd))}`)}`;
+    if (shape.kind === "arrow") {
+      // An arrow has no `arguments`: it takes them as a rest parameter and
+      // hands them to an inner arrow with its own parameter list.
+      const paramsStart = tokens[shape.open].end;
+      const paramsEnd = tokens[shape.close].start;
+      edits.push({ at: paramsStart, end: paramsEnd, text: "...__vinext_args" });
+      edits.push({ at: bodyStart, text: ` return ${call}, async (${code.slice(paramsStart, paramsEnd)}) => {` });
+      edits.push({ at: bodyEnd, text: "}, __vinext_args); " });
+    } else {
+      edits.push({ at: bodyStart, text: ` return ${call}, async () => {` });
+      edits.push({ at: bodyEnd, text: `}, ${shape.kind === "function" ? "arguments" : `[${shape.name}]`}); ` });
+    }
   }
-  if (inserts.length === 0) return null;
+  if (edits.length === 0) return null;
   const importAt = prologueEnd >= 0 ? tokens[prologueEnd].end : 0;
-  inserts.push({ at: importAt, text: `${importAt ? "\n" : ""}import { useCache as __vinext_useCache } from ${JSON.stringify(runtime)};\n` });
+  edits.push({ at: importAt, text: `${importAt ? "\n" : ""}import { useCache as __vinext_useCache } from ${JSON.stringify(runtime)};\n` });
   // Stable sort keeps a closing insert before a later opening at the same offset.
-  inserts.sort((a, b) => a.at - b.at);
+  edits.sort((a, b) => a.at - b.at);
   let out = "";
   let last = 0;
-  for (const { at, text } of inserts) {
+  for (const { at, end, text } of edits) {
+    if (at < last) continue; // inside a replaced parameter list
     out += code.slice(last, at) + text;
-    last = at;
+    last = end ?? at;
   }
   return out + code.slice(last);
 }

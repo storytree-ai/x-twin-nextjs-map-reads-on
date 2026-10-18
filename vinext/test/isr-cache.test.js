@@ -25,46 +25,56 @@ test("revalidateSeconds reads s-maxage", () => {
 
 test("an ISR page answers MISS, HIT, then STALE while it regenerates, then HIT", async () => {
   const { render, count } = renderer("s-maxage=0.05, stale-while-revalidate");
-  const r1 = await serveWithIsr("html:/isr-a", render);
+  const r1 = await serveWithIsr("html:/isr-a", "/isr-a", render);
   assert.equal(r1.headers.get("x-vinext-cache"), "MISS");
   assert.equal(await r1.text(), "body-1");
-  const r2 = await serveWithIsr("html:/isr-a", render);
+  const r2 = await serveWithIsr("html:/isr-a", "/isr-a", render);
   assert.equal(r2.headers.get("x-vinext-cache"), "HIT");
   assert.equal(r2.headers.get("cache-control"), "s-maxage=0.05, stale-while-revalidate");
   assert.equal(await r2.text(), "body-1");
   await sleep(80);
-  const r3 = await serveWithIsr("html:/isr-a", render);
+  const r3 = await serveWithIsr("html:/isr-a", "/isr-a", render);
   assert.equal(r3.headers.get("x-vinext-cache"), "STALE");
   assert.equal(await r3.text(), "body-1");
   await sleep(10);
   assert.equal(count(), 2);
-  const r4 = await serveWithIsr("html:/isr-a", render);
+  const r4 = await serveWithIsr("html:/isr-a", "/isr-a", render);
   assert.equal(r4.headers.get("x-vinext-cache"), "HIT");
   assert.equal(await r4.text(), "body-2");
 });
 
+test("each query string has its own ISR entry", async () => {
+  const { render } = renderer("s-maxage=60, stale-while-revalidate");
+  const a = await serveWithIsr("html:/isr-q?f=a", "/isr-q", render);
+  const b = await serveWithIsr("html:/isr-q?f=b", "/isr-q", render);
+  assert.equal(b.headers.get("x-vinext-cache"), "MISS");
+  assert.notEqual(await b.text(), await a.text());
+  revalidatePath("/isr-q");
+  assert.equal((await serveWithIsr("html:/isr-q?f=a", "/isr-q", render)).headers.get("x-vinext-cache"), "MISS");
+});
+
 test("pages that are not ISR pass through uncached", async () => {
   const { render, count } = renderer("private, no-cache, no-store, max-age=0, must-revalidate");
-  const r1 = await serveWithIsr("html:/dyn", render);
+  const r1 = await serveWithIsr("html:/dyn", "/dyn", render);
   assert.equal(r1.headers.get("x-vinext-cache"), null);
-  await serveWithIsr("html:/dyn", render);
+  await serveWithIsr("html:/dyn", "/dyn", render);
   assert.equal(count(), 2);
   const notFound = async () => ({ response: new Response("nf", { status: 404, headers: { "Cache-Control": "s-maxage=5" } }), tags: [] });
-  assert.equal((await serveWithIsr("html:/nf", notFound)).headers.get("x-vinext-cache"), null);
+  assert.equal((await serveWithIsr("html:/nf", "/nf", notFound)).headers.get("x-vinext-cache"), null);
 });
 
 test("revalidatePath and revalidateTag drop ISR entries", async () => {
   const a = renderer("s-maxage=60, stale-while-revalidate", ["tag-a"]);
-  await serveWithIsr("html:/isr-p", a.render);
-  await serveWithIsr("rsc:/isr-p", a.render);
-  assert.equal((await serveWithIsr("html:/isr-p", a.render)).headers.get("x-vinext-cache"), "HIT");
+  await serveWithIsr("html:/isr-p", "/isr-p", a.render);
+  await serveWithIsr("rsc:/isr-p", "/isr-p", a.render);
+  assert.equal((await serveWithIsr("html:/isr-p", "/isr-p", a.render)).headers.get("x-vinext-cache"), "HIT");
   revalidatePath("/isr-p");
-  assert.equal((await serveWithIsr("html:/isr-p", a.render)).headers.get("x-vinext-cache"), "MISS");
-  assert.equal((await serveWithIsr("rsc:/isr-p", a.render)).headers.get("x-vinext-cache"), "MISS");
+  assert.equal((await serveWithIsr("html:/isr-p", "/isr-p", a.render)).headers.get("x-vinext-cache"), "MISS");
+  assert.equal((await serveWithIsr("rsc:/isr-p", "/isr-p", a.render)).headers.get("x-vinext-cache"), "MISS");
   revalidateTag("other");
-  assert.equal((await serveWithIsr("html:/isr-p", a.render)).headers.get("x-vinext-cache"), "HIT");
+  assert.equal((await serveWithIsr("html:/isr-p", "/isr-p", a.render)).headers.get("x-vinext-cache"), "HIT");
   revalidateTag("tag-a");
-  assert.equal((await serveWithIsr("html:/isr-p", a.render)).headers.get("x-vinext-cache"), "MISS");
+  assert.equal((await serveWithIsr("html:/isr-p", "/isr-p", a.render)).headers.get("x-vinext-cache"), "MISS");
   revalidatePath("/", "layout");
-  assert.equal((await serveWithIsr("html:/isr-p", a.render)).headers.get("x-vinext-cache"), "MISS");
+  assert.equal((await serveWithIsr("html:/isr-p", "/isr-p", a.render)).headers.get("x-vinext-cache"), "MISS");
 });

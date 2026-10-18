@@ -24,6 +24,8 @@ test("unstable_cache returns one value per key and arguments", async () => {
   const b = await get(2);
   assert.equal(a2.v, a1.v);
   assert.notEqual(b.v, a1.v);
+  const sameKeys = unstable_cache(async (n) => ({ n, v: -1 }), ["uc-a"]);
+  assert.equal((await sameKeys(1)).v, -1, "a different function with the same keyParts has its own entries");
   const other = unstable_cache(async () => tick(), ["uc-b"]);
   assert.notEqual(await other(), await get(1).then((x) => x.v));
 });
@@ -129,7 +131,10 @@ test("cached fetch answers repeat force-cache and next.revalidate GETs from the 
   revalidateTag("f");
   assert.equal(await (await fetch("http://x.test/b", { next: { revalidate: 60, tags: ["f"] } })).text(), "body-3");
   assert.equal(await (await fetch("http://x.test/a")).text(), "body-4");
-  assert.equal(await (await fetch("http://x.test/a", { method: "POST", cache: "force-cache" })).text(), "body-5");
+  const failing = cachedFetch(async () => new Response(`fail-${++calls}`, { status: 500 }));
+  assert.equal(await (await failing("http://x.test/e", { cache: "force-cache" })).text(), "fail-5");
+  assert.equal(await (await failing("http://x.test/e", { cache: "force-cache" })).text(), "fail-6");
+  assert.equal(await (await fetch("http://x.test/a", { method: "POST", cache: "force-cache" })).text(), "body-7");
 });
 
 test("a no-store fetch marks the render dynamic", async () => {
@@ -150,9 +155,13 @@ test("transformUseCache wraps functions whose body starts with 'use cache'", asy
     "  'use cache';",
     "  return { x, n: globalThis.__n = (globalThis.__n || 0) + 1 };",
     "};",
+    "const byId = async ({ id }, [first] = []) => {",
+    "  'use cache';",
+    "  return { id, first, n: globalThis.__n = (globalThis.__n || 0) + 1 };",
+    "};",
     "function plain() { const s = '{ \"use cache\" }'; return s; }",
     "if (true) { 'use cache'; }",
-    "export { getData, arrow, plain };",
+    "export { getData, arrow, byId, plain };",
   ].join("\n");
   const out = transformUseCache(code, "/app/lib/data.js");
   assert.ok(out, "the module is transformed");
@@ -165,6 +174,11 @@ test("transformUseCache wraps functions whose body starts with 'use cache'", asy
   assert.notEqual((await mod.getData(2, 2)).n, r1.n);
   const x1 = await mod.arrow("q");
   assert.equal((await mod.arrow("q")).n, x1.n);
+  const id1 = await mod.byId({ id: 1 }, ["a"]);
+  assert.equal((await mod.byId({ id: 1 }, ["a"])).n, id1.n);
+  assert.equal(id1.first, "a");
+  assert.notEqual((await mod.byId({ id: 2 }, ["a"])).n, id1.n);
+  assert.notEqual((await mod.byId({ id: 1 }, ["b"])).n, id1.n);
   assert.equal(mod.plain(), '{ "use cache" }');
 });
 
@@ -175,8 +189,10 @@ test("transformUseCache wraps every exported function of a 'use cache' file", as
     "export default async function Page(props) { return { id: props.id, n: ++n }; }",
     "export async function helper() { return ++n; }",
     "export const other = async () => { return ++n; };",
-    "function internal() { return ++n; }",
-    "export { internal };",
+    "async function listed(x) { return ++n; }",
+    "const named = async () => { return ++n; };",
+    "function local() { return ++n; }",
+    "export { listed, named as renamed };",
   ].join("\n");
   const out = transformUseCache(code, "/app/page.js");
   const mod = await importCode(out);
@@ -187,7 +203,18 @@ test("transformUseCache wraps every exported function of a 'use cache' file", as
   assert.equal(await mod.helper(), h);
   const o = await mod.other();
   assert.equal(await mod.other(), o);
-  assert.notEqual(mod.internal(), mod.internal());
+  const l = await mod.listed(1);
+  assert.equal(await mod.listed(1), l);
+  const r = await mod.renamed();
+  assert.equal(await mod.renamed(), r);
+});
+
+test("export default of a local function in a 'use cache' file is cached", async () => {
+  const code = ['"use cache"', "let n = 0;", "async function Page() { return ++n; }", "export default Page;"].join("\n");
+  const mod = await importCode(transformUseCache(code, "/app/default.js"));
+  resetDataCache();
+  const v = await mod.default();
+  assert.equal(await mod.default(), v);
 });
 
 test("transformUseCache leaves modules without the directive alone", () => {

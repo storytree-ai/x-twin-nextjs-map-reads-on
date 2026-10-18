@@ -31,7 +31,9 @@ export function cachedFetch(base) {
       async () => {
         const res = await base(input, init);
         const body = new Uint8Array(await res.arrayBuffer());
-        return { value: { body, status: res.status, statusText: res.statusText, headers: [...res.headers], url: res.url } };
+        const value = { body, status: res.status, statusText: res.statusText, headers: [...res.headers], url: res.url };
+        // A failed response is answered but not kept.
+        return res.ok ? { value } : { value, revalidate: 0 };
       },
       { tags, revalidate },
     );

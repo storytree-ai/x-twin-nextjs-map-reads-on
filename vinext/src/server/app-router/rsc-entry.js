@@ -378,7 +378,8 @@ const ISR_ENABLED = !import.meta.env.DEV;
  */
 function renderPageCached(request, url, isRsc, match, report) {
   if (!ISR_ENABLED || !match || request.method !== "GET") return renderPage(url, isRsc, match, report);
-  return serveWithIsr(`${isRsc ? "rsc" : "html"}:${url.pathname}`, () => {
+  // Pages may read searchParams, so each query string is its own entry.
+  return serveWithIsr(`${isRsc ? "rsc" : "html"}:${url.pathname}${url.search}`, url.pathname, () => {
     const ctx = createRequestContext(request, { phase: "render" });
     return runWithRequestContext(ctx, async () => {
       const response = await renderPage(url, isRsc, match, report);

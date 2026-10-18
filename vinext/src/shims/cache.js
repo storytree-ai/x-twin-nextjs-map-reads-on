@@ -44,7 +44,7 @@ export { unstable_noStore as noStore };
 export function unstable_cache(fn, keyParts = [], options = {}) {
   const tags = Array.isArray(options.tags) ? options.tags : [];
   const revalidate = options.revalidate === false ? Infinity : options.revalidate;
-  const base = `unstable-cache:${keyParts.length ? stableKey(keyParts) : fn.toString()}`;
+  const base = `unstable-cache:${fn.toString()}:${stableKey(keyParts)}`;
   return async (...args) =>
     cached(`${base}:${stableKey(args)}`, async () => ({ value: await fn(...args) }), { tags, revalidate });
 }
