@@ -234,7 +234,7 @@ export function pagesRouteKind(pathname) {
  * then afterFiles, then dynamic pages, then fallback rewrites. Returns
  * { url, match } or null once the pipeline has answered. A request the App
  * Router's pipeline has already `routed` is only matched. A public file
- * (`serveFile`) is served once beforeFiles rewrites have run.
+ * (`serveFile`) is served when a path names one after beforeFiles, afterFiles or fallback rewrites.
  */
 async function routeRequest(req, res, { url, pathname, isData }, routed, serveFile) {
   if (routed) return { url: routed, match: matchPagesRoute(routes, routed.pathname) };
@@ -255,6 +255,7 @@ async function routeRequest(req, res, { url, pathname, isData }, routed, serveFi
     if (rewritten === false) return null;
     if (rewritten) {
       request = rewritten;
+      if (!isData && serveFile && (await serveFile(request.url.pathname, req, res, request.status))) return null;
       match = matchPagesRoute(routes, request.url.pathname);
       if (match) break;
     }

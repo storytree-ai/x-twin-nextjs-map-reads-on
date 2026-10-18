@@ -77,7 +77,7 @@ function isClientRscFetch(req, isRsc) {
  * "dynamic" or null) and `handlePages(req, res, url)` hand pages/ routes to the Pages Router, whose own
  * pipeline is skipped for a request routed here. `serveFile(pathname, req,
  * res, status)` answers for a public file (see server/static-files.js),
- * checked once beforeFiles rewrites have run.
+ * checked when a path names one after beforeFiles, afterFiles or fallback rewrites.
  */
 export async function handleAppRouterRequest(req, res, { entry, pagesRouteKind = () => null, handlePages, serveFile }) {
   const rawUrl = req.originalUrl || req.url || "/";
@@ -117,6 +117,7 @@ export async function handleAppRouterRequest(req, res, { entry, pagesRouteKind =
       if (rewritten === false) return true;
       if (rewritten) {
         request = rewritten;
+        if (serveFile && (await serveFile(request.url.pathname, req, res, request.status))) return true;
         route = routeOf(request.url.pathname);
         if (route) break;
       }

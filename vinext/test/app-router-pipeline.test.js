@@ -38,7 +38,7 @@ const serverConfig = {
   redirects: [{ source: "/old", destination: "/about", permanent: true }],
   rewrites: {
     beforeFiles: [],
-    afterFiles: [{ source: "/after", destination: "/" }],
+    afterFiles: [{ source: "/after", destination: "/" }, { source: "/old-robots", destination: "/robots.txt" }],
     fallback: [{ source: "/to-pages", destination: "/legacy" }],
   },
 };
@@ -187,5 +187,11 @@ test("a public file the matcher selects runs middleware, then is served", async 
 test("a public file named like an RSC payload is served as the file", async () => {
   const { served, calls } = await run("/data.rsc", { files: ["/data.rsc"] });
   assert.deepEqual(served, ["/data.rsc"]);
+  assert.equal(calls.rendered.length, 0);
+});
+
+test("an afterFiles rewrite to a public file serves the file", async () => {
+  const { served, calls } = await run("/old-robots", { files: ["/robots.txt"] });
+  assert.deepEqual(served, ["/robots.txt"]);
   assert.equal(calls.rendered.length, 0);
 });

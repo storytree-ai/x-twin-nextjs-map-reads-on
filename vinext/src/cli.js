@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { pathToFileURL } from "node:url";
-import { createStaticFileServer } from "./server/static-files.js";
+import { createStaticFileServer, findStaticFile } from "./server/static-files.js";
 
 const VITE_CONFIGS = ["vite.config.ts", "vite.config.mts", "vite.config.js", "vite.config.mjs", "vite.config.cjs"];
 
@@ -50,25 +50,20 @@ async function build() {
 }
 
 /**
- * The paths of Vite's own client build output (the chunks, CSS and assets its
- * manifest lists, and the manifest), the counterpart of Next.js's
- * /_next/static: served before the request pipeline. Other client build files
- * are public/ copies, served once the pipeline routes there.
+ * Whether `pathname` is a file of the client build itself (Vite's chunks,
+ * CSS and assets), the counterpart of Next.js's /_next/static: served before
+ * the request pipeline. The build's copies of public/ files are not: they are
+ * served once the pipeline routes there, so middleware may select them.
  */
-export function builtAssets(clientDir) {
-  const built = new Set(["/.vite/manifest.json"]);
-  const manifestFile = path.join(clientDir, ".vite", "manifest.json");
-  if (!fs.existsSync(manifestFile)) return built;
-  for (const chunk of Object.values(JSON.parse(fs.readFileSync(manifestFile, "utf8")))) {
-    for (const file of [chunk.file, ...(chunk.css || []), ...(chunk.assets || [])]) if (file) built.add("/" + file);
-  }
-  return built;
+export function isBuiltAsset(clientDir, publicDir, pathname) {
+  return findStaticFile([clientDir], pathname) !== null && findStaticFile([publicDir], pathname) === null;
 }
 
 /** A GET or HEAD for a built asset, answered from the client build; false otherwise. */
-function serveBuiltAsset(built, serveFile, req, res) {
+function serveBuiltAsset(root, serveFile, req, res) {
   const pathname = (req.url || "/").split("?")[0];
-  if ((req.method !== "GET" && req.method !== "HEAD") || !built.has(pathname)) return false;
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  if (!isBuiltAsset(path.join(root, "dist", "client"), path.join(root, "public"), pathname)) return false;
   if (pathname.startsWith("/assets/")) res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
   return serveFile(pathname, req, res);
 }
@@ -90,11 +85,9 @@ async function startApp(opts, root, rscEntry) {
   const rsc = await import(pathToFileURL(rscEntry).href);
   const pages = await loadPagesServer(root);
   await rsc.instrumentationReady();
-  const clientDir = path.join(root, "dist", "client");
-  const serveFile = createStaticFileServer([clientDir, path.join(root, "public")].filter((d) => fs.existsSync(d)));
-  const built = builtAssets(clientDir);
+  const serveFile = createStaticFileServer([path.join(root, "dist", "client"), path.join(root, "public")].filter((d) => fs.existsSync(d)));
   const server = http.createServer(async (req, res) => {
-    if (serveBuiltAsset(built, serveFile, req, res)) return;
+    if (serveBuiltAsset(root, serveFile, req, res)) return;
     try {
       const handlePages = (request, response, routed) =>
         pages.handlePagesRequest(request, response, { dev: false, buildId: "production", clientEntryUrl: pages.clientEntryUrl, routed, serveFile });
@@ -129,9 +122,8 @@ async function start(opts) {
   const clientEntryUrl = "/" + entry.file;
   const { handlePagesRequest } = await import(pathToFileURL(serverEntry).href);
   const serveFile = createStaticFileServer([clientDir, path.join(root, "public")].filter((d) => fs.existsSync(d)));
-  const built = builtAssets(clientDir);
   const server = http.createServer(async (req, res) => {
-    if (serveBuiltAsset(built, serveFile, req, res)) return;
+    if (serveBuiltAsset(root, serveFile, req, res)) return;
     try {
       await handlePagesRequest(req, res, { dev: false, buildId: "production", clientEntryUrl, serveFile });
     } catch (err) {

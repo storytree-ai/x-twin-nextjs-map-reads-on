@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { parseArgs, builtAssets } from "../src/cli.js";
+import { parseArgs, isBuiltAsset } from "../src/cli.js";
 import { createStaticFileServer } from "../src/server/static-files.js";
 import { isPageRequest, generatePagesManifest } from "../src/plugin/index.js";
 
@@ -84,19 +84,19 @@ test("the static file server serves a file under its dirs with the given status,
   assert.equal(serveFile("/hello%20world.txt", { method: "POST" }, {}), false);
 });
 
-test("vinext start serves Vite's built chunks directly and public files through the pipeline", () => {
-  const clientDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-client-"));
-  fs.mkdirSync(path.join(clientDir, ".vite"));
-  const manifest = {
-    "virtual:vinext-client": { file: "assets/index-abc.js", isEntry: true, css: ["assets/index-def.css"], imports: ["_shared"] },
-    _shared: { file: "assets/shared-123.js", assets: ["assets/logo-456.png"] },
-  };
-  fs.writeFileSync(path.join(clientDir, ".vite", "manifest.json"), JSON.stringify(manifest));
-  const built = builtAssets(clientDir);
-  for (const p of ["/assets/index-abc.js", "/assets/index-def.css", "/assets/shared-123.js", "/assets/logo-456.png", "/.vite/manifest.json"]) {
-    assert.equal(built.has(p), true, p);
-  }
-  // A public/assets/ copy is not Vite's: middleware may select it.
-  assert.equal(built.has("/assets/from-public.png"), false);
-  assert.equal(built.has("/robots.txt"), false);
+test("vinext start serves its client build directly, except public/ copies, which go through the pipeline", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-start-"));
+  const clientDir = path.join(root, "dist", "client");
+  const publicDir = path.join(root, "public");
+  fs.mkdirSync(path.join(clientDir, "assets"), { recursive: true });
+  fs.mkdirSync(path.join(publicDir, "assets"), { recursive: true });
+  for (const file of ["assets/index-abc.js", "assets/logo.png", "robots.txt"]) fs.writeFileSync(path.join(clientDir, file), "");
+  for (const file of ["assets/logo.png", "robots.txt"]) fs.writeFileSync(path.join(publicDir, file), "");
+  const built = (p) => isBuiltAsset(clientDir, publicDir, p);
+  assert.equal(built("/assets/index-abc.js"), true);
+  assert.equal(built("/assets/logo.png"), false);
+  assert.equal(built("/robots.txt"), false);
+  assert.equal(built("/missing.js"), false);
+  // Without public/ (a deployment of dist/ alone) the whole build is served directly.
+  assert.equal(isBuiltAsset(clientDir, path.join(root, "nope"), "/robots.txt"), true);
 });
