@@ -102,11 +102,13 @@ async function buildTree(levels, params, leaf, { fallback, pathname } = {}) {
   for (let i = last; i >= 0; i--) {
     const level = levels[i];
     const mod = mods[i];
-    if (!fallback && (mod.notFound || mod.forbidden || mod.unauthorized)) {
+    // The root level always has a boundary, with default fallbacks for missing files.
+    if (!fallback && (i === 0 || mod.notFound || mod.forbidden || mod.unauthorized)) {
+      const fallbackFor = (m, status) => (m ? createElement(m.default) : i === 0 ? defaultFallback(status) : undefined);
       node = createElement(HttpFallbackBoundary, {
-        notFound: mod.notFound ? createElement(mod.notFound.default) : undefined,
-        forbidden: mod.forbidden ? createElement(mod.forbidden.default) : undefined,
-        unauthorized: mod.unauthorized ? createElement(mod.unauthorized.default) : undefined,
+        notFound: fallbackFor(mod.notFound, 404),
+        forbidden: fallbackFor(mod.forbidden, 403),
+        unauthorized: fallbackFor(mod.unauthorized, 401),
         children: node,
       });
     }
