@@ -311,7 +311,8 @@ export function selectSlot(slot, rest) {
 /**
  * The intercepting page for a client navigation to `pathname` from
  * `fromPathname`: the route the client is on (which must run through the
- * intercepting layout), the intercept, its params and the owner's level.
+ * intercepting layout), the intercept, its params, the owner's level and the
+ * match a direct load of `pathname` would render (`target`, or null).
  */
 export function matchIntercept(intercepts, routes, pathname, fromPathname) {
   if (!fromPathname || !intercepts?.length) return null;
@@ -321,10 +322,11 @@ export function matchIntercept(intercepts, routes, pathname, fromPathname) {
     if (!params) continue;
     const from = matchAppRoute(routes, fromPathname);
     if (!from || from.route.type !== "page") continue;
-    if (matchAppRoute(routes, pathname)?.route === from.route) continue;
+    const target = matchAppRoute(routes, pathname);
+    if (target?.route === from.route) continue;
     const ownerIndex = from.route.levels.findIndex((l) => l.dir === intercept.owner);
     if (ownerIndex < 0) continue;
-    return { route: from.route, fromParams: from.params, intercept, params, ownerIndex };
+    return { route: from.route, fromParams: from.params, intercept, params, ownerIndex, target };
   }
   return null;
 }

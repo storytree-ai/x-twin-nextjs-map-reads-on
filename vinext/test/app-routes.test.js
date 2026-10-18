@@ -226,6 +226,7 @@ test("an intercept applies only when navigating from under the intercepting layo
   assert.equal(hit.intercept.file, "feed/@modal/(...)photos/[id]/page.tsx");
   assert.deepEqual(hit.params, { id: "7" });
   assert.equal(hit.ownerIndex, 1);
+  assert.equal(hit.target.route.file, "photos/[id]/page.tsx");
   assert.equal(matchIntercept(intercepts, routes, "/photos/7", "/dashboard"), null);
   assert.equal(matchIntercept(intercepts, routes, "/photos/7", null), null);
   assert.equal(matchIntercept(intercepts, routes, "/feed", "/feed"), null);

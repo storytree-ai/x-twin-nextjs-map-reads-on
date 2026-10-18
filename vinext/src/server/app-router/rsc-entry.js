@@ -227,7 +227,10 @@ async function routeTree(match, url, caught) {
   const { route, params, intercept } = match;
   // dynamicParams = false: params generateStaticParams did not return are not found.
   if (intercept) {
-    if (intercept.intercept.segments.some((s) => s.value === undefined) && !(await staticParamsAllow(await interceptModules(intercept), intercept.params))) notFound();
+    const { target } = intercept;
+    const dynamic = intercept.intercept.segments.some((s) => s.value === undefined);
+    if (dynamic && !(await staticParamsAllow(await interceptModules(intercept), intercept.params))) notFound();
+    if (target?.route.isDynamic && !(await staticParamsAllow(await routeModules(target.route), target.params))) notFound();
   } else if (route.isDynamic && !(await staticParamsAllow(await routeModules(route), params))) notFound();
   const options = { pathname: url.pathname, searchParams: url.searchParams, caught, slotPathname: match.slotPathname };
   // A client navigation intercepted: the page the client is on, the
