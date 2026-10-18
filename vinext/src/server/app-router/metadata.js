@@ -21,12 +21,17 @@ async function levelFiles(level, params, load) {
     if (kind === "manifest") entries.push({ kind, href, info: {} });
     else if (isStatic) entries.push({ kind, href, info: mod.info });
     else if (typeof mod.generateImageMetadata === "function") {
-      for (const image of (await mod.generateImageMetadata({ params: Promise.resolve(params) })) || []) {
+      for (const image of (await mod.generateImageMetadata({ params: thenable(params) })) || []) {
         entries.push({ kind, href: `${href}/${image.id}`, info: imageInfo(image, mod) });
       }
     } else entries.push({ kind, href, info: imageInfo(mod, mod) });
   }
   return fileMetadata(entries);
+}
+
+/** Params as Next.js 15 passes them: a promise that also has the values as properties. */
+function thenable(value) {
+  return Object.assign(Promise.resolve(value), value);
 }
 
 function imageInfo(source, mod) {

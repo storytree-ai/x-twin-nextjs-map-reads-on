@@ -199,12 +199,14 @@ test("file-convention icons and Open Graph images; the nearest segment's images 
   assert.deepEqual(out, [
     "title :: T",
     "link rel=manifest href=/manifest.webmanifest",
+    "meta property=og:title content=T",
     "meta property=og:image content=http://x.test/about/opengraph-image.png?h",
     "meta property=og:image:type content=image/png",
     "meta property=og:image:width content=10",
     "meta property=og:image:height content=20",
     "meta property=og:image:alt content=About",
     "meta name=twitter:card content=summary_large_image",
+    "meta name=twitter:title content=T",
     "meta name=twitter:image content=http://x.test/about/opengraph-image.png?h",
     "meta name=twitter:image:type content=image/png",
     "meta name=twitter:image:width content=10",
@@ -244,4 +246,31 @@ test("the nearest segment's file icons go ahead of metadata.icons", async () => 
 
 test("a keywords string renders as given", async () => {
   assert.deepEqual(await tagsOf([seg({ metadata: { keywords: "a, b" } })]), ["meta name=keywords content=a, b"]);
+});
+
+test("the root favicon stays first under a segment with its own icons", async () => {
+  const rootFiles = fileMetadata([
+    { kind: "favicon", href: "/favicon.ico", info: { contentType: "image/x-icon" } },
+    { kind: "icon", href: "/icon.png", info: {} },
+  ]);
+  const nested = fileMetadata([{ kind: "icon", href: "/x/icon.png", info: {} }]);
+  assert.deepEqual(await tagsOf([seg({}, rootFiles), seg({}, nested)]), [
+    "link rel=icon href=/favicon.ico type=image/x-icon",
+    "link rel=icon href=/x/icon.png",
+  ]);
+});
+
+test("openGraph and twitter without a title or description take the page's", async () => {
+  const out = await tagsOf([seg({ metadata: { title: "Page", description: "Desc", openGraph: { images: ["https://e.com/i.png"] }, twitter: { card: "summary" } } })]);
+  assert.deepEqual(out, [
+    "title :: Page",
+    "meta name=description content=Desc",
+    "meta property=og:title content=Page",
+    "meta property=og:description content=Desc",
+    "meta property=og:image content=https://e.com/i.png",
+    "meta name=twitter:card content=summary",
+    "meta name=twitter:title content=Page",
+    "meta name=twitter:description content=Desc",
+    "meta name=twitter:image content=https://e.com/i.png",
+  ]);
 });

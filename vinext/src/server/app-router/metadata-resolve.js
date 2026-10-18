@@ -120,7 +120,7 @@ function resolveIcons(icons) {
  * `info` holding contentType, width, height, hash and alt as known.
  */
 export function fileMetadata(entries) {
-  const out = { icon: [], apple: [], openGraph: [], twitter: [], manifest: null };
+  const out = { favicon: null, icon: [], apple: [], openGraph: [], twitter: [], manifest: null };
   // favicon.ico keeps its bare URL, as browsers ask for it.
   const asIcon = ({ kind, href, info = {} }) => {
     const icon = { url: info.hash && kind !== "favicon" ? `${href}?${info.hash}` : href };
@@ -139,7 +139,7 @@ export function fileMetadata(entries) {
   };
   for (const entry of entries) {
     if (entry.kind === "manifest") out.manifest = entry.href;
-    else if (entry.kind === "favicon") out.icon.unshift(asIcon(entry));
+    else if (entry.kind === "favicon") out.favicon = asIcon(entry);
     else if (entry.kind === "icon" || entry.kind === "apple") out[entry.kind].push(asIcon(entry));
     else if (entry.kind === "openGraph" || entry.kind === "twitter") out[entry.kind].push(asImage(entry));
   }
@@ -158,8 +158,9 @@ export async function resolveMetadata(segments, props, { origin } = {}) {
   const resolved = { title: null, metadataBase: null };
   // Templates come from what is resolved so far: a string title clears one.
   let templates = { title: null, openGraph: null, twitter: null };
-  // The nearest segment's icon files, put ahead of metadata.icons at the end.
-  const fileIcons = { icon: [], apple: [] };
+  // The nearest segment's icon files, put ahead of metadata.icons at the end
+  // (the root's favicon ahead of them all, under whichever segment).
+  const fileIcons = { favicon: null, icon: [], apple: [] };
   for (const { mod, files } of segments) {
     let md = mod?.metadata;
     if (mod && typeof mod.generateMetadata === "function") md = await mod.generateMetadata(props, Promise.resolve(snapshot(resolved)));
@@ -190,15 +191,17 @@ export async function resolveMetadata(segments, props, { origin } = {}) {
       twitter: resolved.twitter?.title?.template ?? null,
     };
   }
-  if (fileIcons.icon.length || fileIcons.apple.length) {
+  if (fileIcons.favicon || fileIcons.icon.length || fileIcons.apple.length) {
     const icons = resolved.icons || { icon: [], apple: [], shortcut: [], other: [] };
-    resolved.icons = { ...icons, icon: [...fileIcons.icon, ...icons.icon], apple: [...fileIcons.apple, ...icons.apple] };
+    const favicon = fileIcons.favicon ? [fileIcons.favicon] : [];
+    resolved.icons = { ...icons, icon: [...favicon, ...fileIcons.icon, ...icons.icon], apple: [...fileIcons.apple, ...icons.apple] };
   }
   return postProcess(resolved);
 }
 
 /** A segment's icon files replace those above; its images join unless its metadata names its own. */
 function applyFiles(resolved, md, files, base, fileIcons) {
+  if (files.favicon) fileIcons.favicon = files.favicon;
   if (files.icon.length) fileIcons.icon = files.icon;
   if (files.apple.length) fileIcons.apple = files.apple;
   if (files.manifest) resolved.manifest = files.manifest;
@@ -211,16 +214,28 @@ function applyFiles(resolved, md, files, base, fileIcons) {
   }
 }
 
-/** Twitter fields an Open Graph sets and twitter leaves out are filled from it. */
+/**
+ * Twitter fields an Open Graph sets and twitter leaves out are filled from
+ * it; then an openGraph or twitter without a title or description takes the
+ * page's.
+ */
 function postProcess(md) {
-  const { openGraph, twitter } = md;
-  if (!openGraph) return md;
-  const fill = {};
-  if (!twitter?.title?.absolute && openGraph.title?.absolute) fill.title = openGraph.title;
-  if (!twitter?.description && openGraph.description) fill.description = openGraph.description;
-  if (!(twitter && Object.prototype.hasOwnProperty.call(twitter, "images") && twitter.images) && openGraph.images) fill.images = openGraph.images;
-  if (Object.keys(fill).length === 0) return md;
-  return { ...md, twitter: { ...(twitter || {}), ...fill } };
+  let { openGraph, twitter } = md;
+  if (openGraph) {
+    const fill = {};
+    if (!twitter?.title?.absolute && openGraph.title?.absolute) fill.title = openGraph.title;
+    if (!twitter?.description && openGraph.description) fill.description = openGraph.description;
+    if (!(twitter && Object.prototype.hasOwnProperty.call(twitter, "images") && twitter.images) && openGraph.images) fill.images = openGraph.images;
+    if (Object.keys(fill).length > 0) twitter = { ...(twitter || {}), ...fill };
+  }
+  const inherit = (target) => {
+    if (!target) return target;
+    const out = { ...target };
+    if (!out.title?.absolute && md.title?.absolute) out.title = md.title;
+    if (!out.description && md.description) out.description = md.description;
+    return out;
+  };
+  return { ...md, openGraph: inherit(openGraph), twitter: inherit(twitter) };
 }
 
 /** The resolved metadata a child's generateMetadata sees as `parent`. */
