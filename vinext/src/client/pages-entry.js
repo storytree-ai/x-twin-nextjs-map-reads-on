@@ -66,7 +66,7 @@ function Root() {
       data.gsp && window.location.search
         ? queryFor(r.pathname, new URLSearchParams(window.location.search), r.query)
         : r.query;
-    if (query !== r.query || window.location.hash) {
+    if (query !== r.query || r.asPath !== currentAsPath()) {
       setAppState({ ...appState, router: routerFor(r.pathname, query, currentAsPath()), onCommit: null });
     }
   }, []);
@@ -235,7 +235,8 @@ async function hydrate() {
   // _app's own dynamic() imports start when it loads; wait for them too.
   await flushPreloads();
   const asPath = currentAsPath();
-  const router = routerFor(data.page, data.query || {}, asPath.split("#")[0]);
+  // The asPath the server rendered with: no fragment, and no query for a static page.
+  const router = routerFor(data.page, data.query || {}, data.gsp ? window.location.pathname : asPath.split("#")[0]);
   appState = { App: appMod?.default || null, Component, pageProps: data.props.pageProps, router };
   window.history.replaceState({ __N: true, url: asPath, as: asPath, options: {} }, "", asPath);
   __setNavigate(navigate);

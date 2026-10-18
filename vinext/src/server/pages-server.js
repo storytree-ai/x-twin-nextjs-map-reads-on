@@ -294,6 +294,8 @@ export async function handlePagesRequest(req, res, opts) {
   const isStatic = !route.isApi && !mod.getServerSideProps && !!mod.getStaticProps;
   // A static page's HTML (and ISR entry) is one per path: only route params.
   const query = isStatic ? { ...params } : { ...searchParamsToQuery(url.searchParams), ...params };
+  // Its asPath is the browser's path without the query, and its entry is keyed by it.
+  const pageAsPath = isStatic ? parsed.pathname : asPath;
 
   if (route.isApi) {
     await handleApiRoute(mod, req, res, query);
@@ -312,7 +314,7 @@ export async function handlePagesRequest(req, res, opts) {
 
   /** Data fetching plus, for HTML (or the ISR cache), the document: { result, html }. */
   const generate = async ({ background = false } = {}) => {
-    const result = await fetchPageProps({ mod, App, route, params, query, req, res, asPath, pathname });
+    const result = await fetchPageProps({ mod, App, route, params, query, req, res, asPath: pageAsPath, pathname });
     if ((!background && res.writableEnded) || result.redirect || result.notFound || (isData && !isStatic)) return { result };
     const html = await renderPageHtml({
       App,
@@ -321,7 +323,7 @@ export async function handlePagesRequest(req, res, opts) {
       pageProps: result.props,
       page: route.pattern,
       query,
-      asPath,
+      asPath: pageAsPath,
       opts,
       extraData: dataFlags,
     });
@@ -333,7 +335,7 @@ export async function handlePagesRequest(req, res, opts) {
     else sendHtml(res, 200, html);
   };
 
-  const cached = isStatic ? isrCache.get(pathname) : undefined;
+  const cached = isStatic ? isrCache.get(pageAsPath) : undefined;
   if (cached) {
     const fresh = Date.now() < cached.expiresAt;
     setIsrHeaders(res, cached.revalidate, fresh ? "HIT" : "STALE");
@@ -342,8 +344,8 @@ export async function handlePagesRequest(req, res, opts) {
       generate({ background: true })
         .then((entry) => {
           const seconds = isrSeconds(entry.result.revalidate);
-          if (entry.html && seconds) isrCache.set(pathname, { ...entry, revalidate: seconds, expiresAt: Date.now() + seconds * 1000 });
-          else isrCache.delete(pathname);
+          if (entry.html && seconds) isrCache.set(pageAsPath, { ...entry, revalidate: seconds, expiresAt: Date.now() + seconds * 1000 });
+          else isrCache.delete(pageAsPath);
         })
         .catch((err) => {
           console.error(err);
@@ -373,7 +375,7 @@ export async function handlePagesRequest(req, res, opts) {
 
   const seconds = isStatic ? isrSeconds(result.revalidate) : null;
   if (seconds) {
-    isrCache.set(pathname, { ...entry, revalidate: seconds, expiresAt: Date.now() + seconds * 1000 });
+    isrCache.set(pageAsPath, { ...entry, revalidate: seconds, expiresAt: Date.now() + seconds * 1000 });
     setIsrHeaders(res, seconds, "MISS");
   }
   send(entry);
