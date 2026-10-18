@@ -47,7 +47,12 @@ export async function renderHead(levels, last, leafMod, { params, props, origin,
   const segments = await Promise.all(
     levels.slice(0, last + 1).map(async (level) => ({ mod: await load(level.layout), files: await levelFiles(level, params, load) })),
   );
-  if (leafMod) segments.push({ mod: leafMod });
+  if (leafMod) {
+    // Files in the leaf's own folder apply after its metadata, as the page's.
+    const files = last === levels.length - 1 ? segments[last].files : undefined;
+    if (files) segments[last] = { mod: segments[last].mod };
+    segments.push({ mod: leafMod, files });
+  }
   const metadata = await resolveMetadata(segments, props, { origin });
   const viewport = await resolveViewport(
     segments.map((s) => s.mod),

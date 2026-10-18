@@ -177,3 +177,10 @@ test("ImageResponse is a PNG of the requested size, filled with the root's backg
   const big = Buffer.from(await gradient.arrayBuffer());
   assert.deepEqual([big.readUInt32BE(16), big.readUInt32BE(20)], [1200, 630]);
 });
+
+test("svg icons are any size; gif images have their size read", () => {
+  assert.equal(staticFileInfo("icon.svg", Buffer.from("<svg/>")).sizes, "any");
+  const gif = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x2c, 0x01, 0xc8, 0x00]);
+  const info = staticFileInfo("opengraph-image.gif", gif);
+  assert.deepEqual([info.width, info.height], [300, 200]);
+});

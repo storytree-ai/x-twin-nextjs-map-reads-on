@@ -70,7 +70,7 @@ function resolveUrl(url, base) {
 }
 
 function applyTemplate(template, title) {
-  return typeof template === "string" ? template.replace("%s", title) : title;
+  return typeof template === "string" ? template.replace(/%s/g, () => title) : title;
 }
 
 /** { absolute, template } for a title value under the template stashed above it. */

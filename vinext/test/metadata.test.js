@@ -274,3 +274,14 @@ test("openGraph and twitter without a title or description take the page's", asy
     "meta name=twitter:image content=https://e.com/i.png",
   ]);
 });
+
+test("a title template replaces every %s", async () => {
+  const md = await resolveMetadata([seg({ metadata: { title: { template: "%s · %s" } } }), seg({ metadata: { title: "A" } })], props);
+  assert.equal(md.title.absolute, "A · A");
+});
+
+test("a segment's image files stay when its openGraph names no images", async () => {
+  const files = fileMetadata([{ kind: "openGraph", href: "/about/opengraph-image.png", info: {} }]);
+  const out = await tagsOf([seg({ metadata: { openGraph: { title: "About" } } }, files)], { origin: "http://x.test" });
+  assert.ok(out.includes("meta property=og:image content=http://x.test/about/opengraph-image.png"), out.join("\n"));
+});

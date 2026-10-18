@@ -108,6 +108,11 @@ export function staticFileInfo(file, bytes) {
     // The first directory entry; 0 means 256.
     info.width = bytes[6] || 256;
     info.height = bytes[7] || 256;
+  } else if (ext === "gif" && bytes.length >= 10) {
+    info.width = bytes.readUInt16LE(6);
+    info.height = bytes.readUInt16LE(8);
+  } else if (ext === "svg") {
+    info.sizes = "any";
   } else if ((ext === "jpg" || ext === "jpeg") && bytes[0] === 0xff && bytes[1] === 0xd8) {
     for (let i = 2; i + 9 < bytes.length; ) {
       if (bytes[i] !== 0xff) break;
