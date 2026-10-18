@@ -294,3 +294,14 @@ test("after() queued while the body streams still runs at its end", async () => 
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(ran, true);
 });
+
+test("a route handler's unhandled error is reported once; navigation errors and successes are not", async () => {
+  const reported = [];
+  const onError = (error) => reported.push(error.message);
+  const thrown = await callRouteHandler({ GET() { throw new Error("handler boom"); } }, req("/api/x"), {}, { onError });
+  assert.equal(thrown.status, 500);
+  assert.deepEqual(reported, ["handler boom"]);
+  await callRouteHandler({ GET() { notFound(); } }, req(), {}, { onError });
+  await callRouteHandler({ GET: () => Response.json({}) }, req(), {}, { onError });
+  assert.deepEqual(reported, ["handler boom"]);
+});

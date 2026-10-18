@@ -6,13 +6,15 @@
  */
 import { createElement, Fragment, Suspense } from "react";
 import { renderToReadableStream } from "@vitejs/plugin-rsc/rsc";
-import { routes, root, loaders } from "virtual:vinext-app-manifest";
+import { routes, root, loaders, loadMiddleware as middlewareLoader, loadInstrumentation } from "virtual:vinext-app-manifest";
+import serverConfig from "virtual:vinext-server-config";
 import { matchAppRoute } from "../../routing/app-routes.js";
 import { ErrorBoundary, HttpFallbackBoundary, RedirectBoundary, LayoutSegments } from "../../client/app-boundaries.js";
 import { httpFallbackStatus, redirectInfo, isNavigationError } from "../../shims/internal/navigation-errors.js";
 import { resolveMetadata, renderMetadata } from "./metadata.js";
 import { parseRscPath } from "../../shared/rsc-url.js";
 import { callRouteHandler } from "./route-handler.js";
+import { createInstrumentation } from "../instrumentation.js";
 import { resolveSegmentConfig, finalizeCacheControl } from "./segment-config.js";
 import {
   createRequestContext,
@@ -200,7 +202,7 @@ function payloadFor(tree, url, params) {
   };
 }
 
-function rscOptions(errors) {
+function rscOptions(errors, report) {
   return {
     onError(error) {
       if (error && typeof error === "object" && typeof error.digest === "string") {
@@ -208,7 +210,10 @@ function rscOptions(errors) {
         return error.digest;
       }
       errors.push(error);
-      if (!isNavigationError(error)) console.error(error);
+      if (!isNavigationError(error)) {
+        console.error(error);
+        report(error);
+      }
       return undefined;
     },
   };
@@ -231,7 +236,7 @@ function redirectResponse(info, isRsc) {
  * Suspense boundary re-renders with the nearest fallback boundary; if a
  * layout keeps throwing, each retry moves the boundary above it.
  */
-async function renderPage(url, isRsc, match) {
+async function renderPage(url, isRsc, match, report) {
   const params = match ? match.params : {};
   let fallbackStatus = null;
   let below = Infinity;
@@ -247,7 +252,7 @@ async function renderPage(url, isRsc, match) {
         below = fallback.level;
         status = fallbackStatus;
       }
-      const stream = renderToReadableStream(payloadFor(tree, url, params), rscOptions([]));
+      const stream = renderToReadableStream(payloadFor(tree, url, params), rscOptions([], report));
       const config = status === 200 && match ? await segmentConfigOf(match.route) : null;
       const isDynamic = () => Boolean(getRequestContext()?.dynamic);
       if (isRsc) {
@@ -294,12 +299,29 @@ async function segmentConfigOf(route) {
 
 async function handleRoute(request, match) {
   const mod = await load(match.route.file);
-  return callRouteHandler(mod, request, match.params, { file: match.route.file });
+  const onError = (error) => reportRequestError(error, request, match.route, "route");
+  return callRouteHandler(mod, request, match.params, { file: match.route.file, onError });
 }
 
-/** Whether a page pathname has an app/ route (pages/ handles the rest). */
-export function hasRoute(pathname) {
-  return matchAppRoute(routes, parseRscPath(pathname).pathname) !== null;
+/** "static" or "dynamic" for the app/ route a page pathname matches, else null. */
+export function routeKind(pathname) {
+  const match = matchAppRoute(routes, pathname);
+  return match ? (match.route.isDynamic ? "dynamic" : "static") : null;
+}
+
+/** next.config's routing rules and the app's middleware, for the server's request pipeline. */
+export { serverConfig };
+export const loadMiddleware = middlewareLoader;
+
+// instrumentation.ts: register() once per server process, before a request is answered.
+const instrumentation = (globalThis[Symbol.for("vinext.instrumentation")] ??= createInstrumentation(loadInstrumentation));
+
+export function instrumentationReady() {
+  return instrumentation.ready();
+}
+
+function reportRequestError(error, request, route, routeType) {
+  instrumentation.report(error, request, route, routeType);
 }
 
 /** The fetch handler: a Request in, a Response out. */
@@ -314,9 +336,15 @@ export default async function handler(request) {
     return handleRoute(request, match);
   }
   const ctx = createRequestContext(request, { phase: "render" });
+  const report = (error) => reportRequestError(error, request, match?.route, "render");
   return runWithRequestContext(ctx, async () => {
-    const response = await renderPage(pageUrl, isRsc || request.headers.get("rsc") === "1", match);
-    return scheduleAfter(ctx, response);
+    try {
+      const response = await renderPage(pageUrl, isRsc || request.headers.get("rsc") === "1", match, report);
+      return scheduleAfter(ctx, response);
+    } catch (error) {
+      report(error);
+      throw error;
+    }
   });
 }
 

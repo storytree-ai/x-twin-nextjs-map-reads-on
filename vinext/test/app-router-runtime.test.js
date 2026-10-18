@@ -88,3 +88,12 @@ test("a request path starting with // stays a path on the request's host", async
   assert.equal(url.pathname, "//example.com/x");
   assert.equal(url.search, "?y=1");
 });
+
+test("the app manifest loads middleware and instrumentation when the app has them", () => {
+  const withBoth = generateAppManifest("/app/app", ["page.tsx"], { middleware: "/app/middleware.ts", instrumentation: "/app/instrumentation.ts" });
+  assert.match(withBoth, /export const loadMiddleware = \(\) => import\("\/app\/middleware.ts"\)/);
+  assert.match(withBoth, /export const loadInstrumentation = \(\) => import\("\/app\/instrumentation.ts"\)/);
+  const without = generateAppManifest("/app/app", ["page.tsx"]);
+  assert.match(without, /export const loadMiddleware = null/);
+  assert.match(without, /export const loadInstrumentation = null/);
+});

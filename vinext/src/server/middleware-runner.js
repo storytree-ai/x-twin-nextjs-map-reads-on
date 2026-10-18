@@ -48,7 +48,14 @@ function relativeTo(href, origin) {
   return url.origin === origin ? url.pathname + url.search + url.hash : url.href;
 }
 
-function sendRedirect(res, destination, status, isData) {
+function sendRedirect(res, destination, status, { isData = false, isRsc = false } = {}) {
+  if (isRsc) {
+    // The App Router's client navigates there itself.
+    res.statusCode = 200;
+    res.setHeader("x-vinext-redirect", destination);
+    res.end();
+    return;
+  }
   if (isData) {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -69,6 +76,41 @@ async function sendWebResponse(res, response, { decoded = false } = {}) {
   const body = response.body ? Buffer.from(await response.arrayBuffer()) : null;
   if (body) res.setHeader("Content-Length", body.length);
   res.end(body);
+}
+
+/**
+ * The request's cookie header with a middleware response's Set-Cookie
+ * applied: set by name, or removed when expired (Max-Age<=0 or a past Expires).
+ */
+function applyResponseCookiesToRequest(req, response, headers) {
+  const setCookies = response.headers.getSetCookie();
+  if (!setCookies.length) return headers;
+  const jar = new Map();
+  for (const part of (headers.get("cookie") || "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0) jar.set(part.slice(0, eq).trim(), part.slice(eq + 1).trim());
+  }
+  for (const setCookie of setCookies) {
+    const [pair, ...attrs] = setCookie.split(";");
+    const eq = pair.indexOf("=");
+    if (eq <= 0) continue;
+    const name = pair.slice(0, eq).trim();
+    const expired = attrs.some((attr) => {
+      const [key, value = ""] = attr.split("=").map((x) => x.trim());
+      if (/^max-age$/i.test(key)) return Number(value) <= 0;
+      if (/^expires$/i.test(key)) return Date.parse(value) <= Date.now();
+      return false;
+    });
+    if (expired) jar.delete(name);
+    else jar.set(name, pair.slice(eq + 1).trim());
+  }
+  const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+  const next = new Headers(headers);
+  if (cookie) next.set("cookie", cookie);
+  else next.delete("cookie");
+  if (cookie) req.headers.cookie = cookie;
+  else delete req.headers.cookie;
+  return next;
 }
 
 /** Replace the Node request's headers with middleware's `request.headers` override. */
@@ -98,12 +140,15 @@ async function proxy(res, req, target, headers) {
 }
 
 /**
- * Run headers, redirects, middleware and beforeFiles rewrites for a request
- * whose logical path is `pathname`. Returns { url, headers } (url possibly
- * rewritten, headers as middleware left them), or null once it has answered.
+ * Run the trailing-slash redirect, headers, redirects, middleware and
+ * beforeFiles rewrites for a request whose logical path is `pathname`.
+ * Returns { url, headers, status? } (url possibly rewritten, headers as
+ * middleware left them, status a middleware rewrite's), or null once it has
+ * answered. `isRsc` answers redirects for the App Router's client.
  */
-export async function runRequestPipeline(req, res, { pathname, search, isData, config, loadMiddleware }) {
+export async function runRequestPipeline(req, res, { pathname, search, isData, isRsc = false, config, loadMiddleware }) {
   const origin = `http://${req.headers.host || "localhost"}`;
+  const redirectAs = { isData, isRsc };
   // Set as parts: a path starting with "//" must not name another host.
   const url = new URL(origin);
   url.pathname = pathname;
@@ -112,9 +157,16 @@ export async function runRequestPipeline(req, res, { pathname, search, isData, c
 
   for (const { key, value } of collectHeaders(config.headers, request)) addHeader(res, key, value);
 
+  // trailingSlash: false. A path starting with "//" is left to 404: its
+  // redirect target would name another host.
+  if (!isData && !config.trailingSlash && pathname.length > 1 && pathname.endsWith("/") && !pathname.startsWith("//")) {
+    sendRedirect(res, pathname.replace(/\/+$/, "") + search, 308, redirectAs);
+    return null;
+  }
+
   const redirect = findRedirect(config.redirects, request);
   if (redirect) {
-    sendRedirect(res, redirect.destination, redirect.status, isData);
+    sendRedirect(res, redirect.destination, redirect.status, redirectAs);
     return null;
   }
 
@@ -141,15 +193,15 @@ export async function runRequestPipeline(req, res, { pathname, search, isData, c
       if (!rewrite && !next) {
         if (location && response.status >= 300 && response.status < 400) {
           copyResponseHeaders(response.headers, res, { skipLength: true });
-          if (isData) res.removeHeader("location");
-          sendRedirect(res, relativeTo(location, origin), response.status, isData);
+          if (isData || isRsc) res.removeHeader("location");
+          sendRedirect(res, relativeTo(location, origin), response.status, redirectAs);
         } else {
           await sendWebResponse(res, response);
         }
         return null;
       }
       copyResponseHeaders(response.headers, res, { skipLength: true });
-      const headers = applyRequestOverride(req, response, request.headers);
+      const headers = applyResponseCookiesToRequest(req, response, applyRequestOverride(req, response, request.headers));
       request = { url: request.url, headers };
       if (rewrite) {
         const target = new URL(rewrite, request.url);
@@ -158,6 +210,7 @@ export async function runRequestPipeline(req, res, { pathname, search, isData, c
           return null;
         }
         request = { url: target, headers };
+        if (response.status !== 200) request.status = response.status;
       }
     }
   }
@@ -168,7 +221,7 @@ export async function runRequestPipeline(req, res, { pathname, search, isData, c
       await proxy(res, req, before, new Headers(request.headers));
       return null;
     }
-    request = { url: before, headers: request.headers };
+    request = { ...request, url: before };
   }
   return request;
 }
@@ -181,5 +234,5 @@ export async function applyRewrites(req, res, rules, request) {
     await proxy(res, req, target, new Headers(request.headers));
     return false;
   }
-  return { url: target, headers: request.headers };
+  return { ...request, url: target };
 }

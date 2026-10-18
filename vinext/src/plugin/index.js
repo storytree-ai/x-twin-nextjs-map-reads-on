@@ -69,8 +69,13 @@ function findSpecial(pagesDir, files, name) {
 
 /** middleware.* (or Next 16's proxy.*) in the root or src/, or null. */
 export function findMiddleware(root) {
+  return findRootModule(root, MIDDLEWARE_NAMES);
+}
+
+/** The first of `names` (with a code extension) in the root or src/, or null. */
+function findRootModule(root, names) {
   for (const dir of [root, path.join(root, "src")]) {
-    for (const name of MIDDLEWARE_NAMES) {
+    for (const name of names) {
       for (const ext of ["ts", "js", "mts", "mjs", "tsx", "jsx"]) {
         const file = path.join(dir, `${name}.${ext}`);
         if (fs.existsSync(file)) return file;
@@ -87,6 +92,7 @@ export function findMiddleware(root) {
 export async function resolveServerConfig(nextConfig) {
   const call = async (fn) => (typeof fn === "function" ? await fn() : undefined);
   return {
+    trailingSlash: Boolean(nextConfig.trailingSlash),
     redirects: (await call(nextConfig.redirects)) || [],
     rewrites: normalizeRewrites(await call(nextConfig.rewrites)),
     headers: (await call(nextConfig.headers)) || [],
@@ -119,8 +125,11 @@ export function generatePagesManifest(pagesDir, files, { server, middleware = nu
   return lines.join("\n");
 }
 
-/** Module source for the rsc environment: the app/ route table and a lazy loader per file it names. */
-export function generateAppManifest(appDir, files) {
+/**
+ * Module source for the rsc environment: the app/ route table, a lazy loader
+ * per file it names, and loaders for middleware and instrumentation (or null).
+ */
+export function generateAppManifest(appDir, files, { middleware = null, instrumentation = null } = {}) {
   const { routes, root } = buildAppRoutes(files);
   const used = new Set();
   const collect = (level) => {
@@ -139,6 +148,8 @@ export function generateAppManifest(appDir, files) {
     `export const loaders = {`,
     ...[...used].sort().map((f) => `  ${JSON.stringify(f)}: () => import(${JSON.stringify(path.join(appDir, f))}),`),
     `};`,
+    `export const loadMiddleware = ${middleware ? `() => import(${JSON.stringify(middleware)})` : "null"};`,
+    `export const loadInstrumentation = ${instrumentation ? `() => import(${JSON.stringify(instrumentation)})` : "null"};`,
   ].join("\n");
 }
 
@@ -277,7 +288,10 @@ export default function vinext(options = {}) {
         return `export default ${JSON.stringify(serverConfig || {})};`;
       }
       if (id === RESOLVED_APP_MANIFEST_ID) {
-        return generateAppManifest(appDir, appDir ? walk(appDir) : []);
+        return generateAppManifest(appDir, appDir ? walk(appDir) : [], {
+          middleware: findMiddleware(root),
+          instrumentation: findRootModule(root, ["instrumentation"]),
+        });
       }
       return null;
     },
@@ -302,28 +316,37 @@ export default function vinext(options = {}) {
         }
         server.ws.send({ type: "full-reload" });
       };
-      const hasPagesRoute = (pathname) => {
-        if (!pagesDir) return false;
+      const pagesRouteKind = (pathname) => {
+        if (!pagesDir) return null;
         pagesRoutes ??= buildPagesRoutes(walk(pagesDir));
-        return matchPagesRoute(pagesRoutes, pathname) !== null;
+        const match = matchPagesRoute(pagesRoutes, pathname);
+        return match ? (match.route.isDynamic ? "dynamic" : "static") : null;
       };
       server.watcher.on("add", invalidateManifest);
       server.watcher.on("unlink", invalidateManifest);
 
       server.middlewares.use(async (req, res, next) => {
         if (!isPageRequest(req, root)) return next();
-        try {
-          if (appDir) {
-            const { handleAppRouterRequest } = await import("../server/app-router/index.js");
-            if (await handleAppRouterRequest(server, req, res, { appDir, root, hasPagesRoute, rscEntry: APP_RSC_ENTRY })) return;
-          }
+        const handlePages = async (request, response, routed) => {
           const mod = await server.ssrLoadModule(PAGES_SERVER_ENTRY);
-          await mod.handlePagesRequest(req, res, {
+          await mod.handlePagesRequest(request, response, {
             dev: true,
             buildId: "development",
             clientEntryUrl: clientEntryUrl(root),
             transformHtml: (url, html) => server.transformIndexHtml(url, html),
+            routed,
           });
+        };
+        try {
+          // The App Router's pipeline runs middleware once for app/ and pages/
+          // routes alike; Pages data requests keep the Pages Router's own.
+          if (appDir && !(req.url || "/").startsWith("/_next/")) {
+            const { handleAppRouterRequest } = await import("../server/app-router/index.js");
+            const entry = await server.environments.rsc.runner.import(APP_RSC_ENTRY);
+            await handleAppRouterRequest(req, res, { entry, pagesRouteKind, handlePages });
+            return;
+          }
+          await handlePages(req, res);
         } catch (err) {
           if (err instanceof Error) server.ssrFixStacktrace(err);
           console.error(err);

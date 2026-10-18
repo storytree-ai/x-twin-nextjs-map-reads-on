@@ -6,7 +6,6 @@ import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { pathToFileURL } from "node:url";
-import { parseRscPath } from "./shared/rsc-url.js";
 
 const VITE_CONFIGS = ["vite.config.ts", "vite.config.mts", "vite.config.js", "vite.config.mjs", "vite.config.cjs"];
 
@@ -102,24 +101,21 @@ async function loadPagesServer(root) {
 }
 
 async function startApp(opts, root, rscEntry) {
-  const { toWebRequest, writeWebResponse } = await import("./server/app-router/index.js");
+  const { handleAppRouterRequest } = await import("./server/app-router/index.js");
   const rsc = await import(pathToFileURL(rscEntry).href);
   const pages = await loadPagesServer(root);
+  await rsc.instrumentationReady();
   const staticDirs = [path.join(root, "dist", "client"), path.join(root, "public")].filter((d) => fs.existsSync(d));
   const server = http.createServer(async (req, res) => {
     if (serveStatic(staticDirs, req, res)) return;
     try {
-      const pathname = (req.url || "/").split("?")[0];
-      if (pages && (pathname.startsWith("/_next/data/") || (!rsc.hasRoute(pathname) && pages.hasPagesRoute(parseRscPath(pathname).pathname)))) {
-        if (pathname.endsWith(".rsc")) {
-          res.setHeader("x-vinext-reload", "1");
-          res.end();
-        } else {
-          await pages.handlePagesRequest(req, res, { dev: false, buildId: "production", clientEntryUrl: pages.clientEntryUrl });
-        }
+      const handlePages = (request, response, routed) =>
+        pages.handlePagesRequest(request, response, { dev: false, buildId: "production", clientEntryUrl: pages.clientEntryUrl, routed });
+      if (pages && (req.url || "/").startsWith("/_next/data/")) {
+        await handlePages(req, res);
         return;
       }
-      await writeWebResponse(await rsc.default(toWebRequest(req)), res);
+      await handleAppRouterRequest(req, res, { entry: rsc, pagesRouteKind: pages ? pages.pagesRouteKind : undefined, handlePages });
     } catch (err) {
       console.error(err);
       if (!res.headersSent) res.statusCode = 500;
