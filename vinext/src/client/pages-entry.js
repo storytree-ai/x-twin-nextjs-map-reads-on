@@ -58,13 +58,16 @@ function Root() {
       done();
     }
   }, [s]);
-  // A static page was rendered with its route params only; once hydrated,
-  // its router query takes in the address bar's search params (Next.js does too).
+  // The server saw no fragment, and a static page only its route params:
+  // once hydrated, the router takes in the hash and the search params.
   useEffect(() => {
-    if (data.gsp && window.location.search) {
-      const r = appState.router;
-      const query = queryFor(r.pathname, new URLSearchParams(window.location.search), r.query);
-      setAppState({ ...appState, router: routerFor(r.pathname, query, r.asPath), onCommit: null });
+    const r = appState.router;
+    const query =
+      data.gsp && window.location.search
+        ? queryFor(r.pathname, new URLSearchParams(window.location.search), r.query)
+        : r.query;
+    if (query !== r.query || window.location.hash) {
+      setAppState({ ...appState, router: routerFor(r.pathname, query, currentAsPath()), onCommit: null });
     }
   }, []);
   return createAppElement({ App: s.App, Component: s.Component, pageProps: s.pageProps, router: s.router });
@@ -177,7 +180,7 @@ async function navigate(method, rawHref, rawAs, options) {
       } else {
         page = json.page;
         // Static pages' data carries only route params; the URL adds the rest.
-        query = queryFor(page, new URL(href, window.location.href).searchParams, json.query);
+        query = json.gsp ? queryFor(page, new URL(href, window.location.href).searchParams, json.query) : json.query;
         pageProps = json.pageProps;
       }
       Component = await loadPageComponent(page);
@@ -194,10 +197,10 @@ async function navigate(method, rawHref, rawAs, options) {
     return false;
   }
 
+  __events.emit("beforeHistoryChange", asPath, { shallow });
   if (method) {
     window.history[method]({ __N: true, url: href, as: asPath, options: { shallow, scroll: options.scroll } }, "", asPath);
   }
-  __events.emit("beforeHistoryChange", asPath, { shallow });
   const router = routerFor(page, query, asPath);
   window.__NEXT_DATA__ = { ...window.__NEXT_DATA__, page, query, props: { ...window.__NEXT_DATA__?.props, pageProps } };
   commit({ Component, pageProps, router }, () => {
@@ -232,7 +235,7 @@ async function hydrate() {
   // _app's own dynamic() imports start when it loads; wait for them too.
   await flushPreloads();
   const asPath = currentAsPath();
-  const router = routerFor(data.page, data.query || {}, asPath);
+  const router = routerFor(data.page, data.query || {}, asPath.split("#")[0]);
   appState = { App: appMod?.default || null, Component, pageProps: data.props.pageProps, router };
   window.history.replaceState({ __N: true, url: asPath, as: asPath, options: {} }, "", asPath);
   __setNavigate(navigate);
