@@ -12,9 +12,16 @@ import { ErrorBoundary, HttpFallbackBoundary, RedirectBoundary, LayoutSegments }
 import { httpFallbackStatus, redirectInfo, isNavigationError } from "../../shims/internal/navigation-errors.js";
 import { resolveMetadata, renderMetadata } from "./metadata.js";
 import { parseRscPath } from "../../shared/rsc-url.js";
+import { callRouteHandler } from "./route-handler.js";
+import { resolveSegmentConfig, pageCacheControl } from "./segment-config.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+  getRequestContext,
+  scheduleAfter,
+} from "../../shims/internal/request-context.js";
 
 const HTTP_FALLBACK_FILE = { 404: "notFound", 403: "forbidden", 401: "unauthorized" };
-const ROUTE_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
 
 async function load(file) {
   if (!file) return null;
@@ -243,7 +250,10 @@ async function renderPage(url, isRsc, match) {
       const stream = renderToReadableStream(payloadFor(tree, url, params), rscOptions([]));
       if (isRsc) return rscResponse(stream, status);
       const ssr = await import.meta.viteRsc.loadModule("ssr", "index");
-      return htmlResponse(await ssr.renderHtml(stream), status);
+      const html = await ssr.renderHtml(stream);
+      // The shell has rendered, so the server components above any Suspense boundary have run.
+      const cacheControl = status === 200 && match ? pageCacheControl(await segmentConfigOf(match.route), getRequestContext()?.dynamic) : null;
+      return htmlResponse(html, status, cacheControl);
     } catch (error) {
       const redirect = redirectInfo(error);
       if (redirect) return redirectResponse(redirect, isRsc);
@@ -264,38 +274,21 @@ function bareFallbackResponse(status) {
   });
 }
 
-function htmlResponse(stream, status) {
-  return new Response(stream, { status, headers: { "Content-Type": "text/html; charset=utf-8" } });
+function htmlResponse(stream, status, cacheControl) {
+  const headers = { "Content-Type": "text/html; charset=utf-8" };
+  if (cacheControl) headers["Cache-Control"] = cacheControl;
+  return new Response(stream, { status, headers });
+}
+
+/** The route's segment config, from its layouts and page. */
+async function segmentConfigOf(route) {
+  const mods = await Promise.all([...route.levels.map((l) => load(l.layout)), load(route.file)]);
+  return resolveSegmentConfig(mods);
 }
 
 async function handleRoute(request, match) {
   const mod = await load(match.route.file);
-  let method = request.method.toUpperCase();
-  let handler = typeof mod[method] === "function" ? mod[method] : null;
-  if (!handler && method === "HEAD" && typeof mod.GET === "function") handler = mod.GET;
-  if (!handler && method === "OPTIONS") {
-    const allow = ROUTE_METHODS.filter((m) => typeof mod[m] === "function" || (m === "HEAD" && typeof mod.GET === "function"));
-    if (!allow.includes("OPTIONS")) allow.push("OPTIONS");
-    return new Response(null, { status: 204, headers: { Allow: allow.join(", ") } });
-  }
-  if (!handler) {
-    const allow = ROUTE_METHODS.filter((m) => typeof mod[m] === "function");
-    return new Response(null, { status: 405, headers: { Allow: allow.join(", ") } });
-  }
-  try {
-    const response = await handler(request, { params: thenable(match.params) });
-    if (!(response instanceof Response)) {
-      throw new Error(`[vinext] route handler app/${match.route.file} ${method} did not return a Response`);
-    }
-    if (request.method.toUpperCase() === "HEAD") return new Response(null, { status: response.status, headers: response.headers });
-    return response;
-  } catch (error) {
-    const redirect = redirectInfo(error);
-    if (redirect) return new Response(null, { status: redirect.status, headers: { Location: redirect.url } });
-    const status = httpFallbackStatus(error);
-    if (status !== null) return new Response(null, { status });
-    throw error;
-  }
+  return callRouteHandler(mod, request, match.params, { file: match.route.file });
 }
 
 /** Whether a page pathname has an app/ route (pages/ handles the rest). */
@@ -314,7 +307,11 @@ export default async function handler(request) {
     if (isRsc) return new Response(null, { status: 200, headers: { "x-vinext-reload": "1" } });
     return handleRoute(request, match);
   }
-  return renderPage(pageUrl, isRsc || request.headers.get("rsc") === "1", match);
+  const ctx = createRequestContext(request, { phase: "render" });
+  return runWithRequestContext(ctx, async () => {
+    const response = await renderPage(pageUrl, isRsc || request.headers.get("rsc") === "1", match);
+    return scheduleAfter(ctx, response);
+  });
 }
 
 if (import.meta.hot) import.meta.hot.accept();
