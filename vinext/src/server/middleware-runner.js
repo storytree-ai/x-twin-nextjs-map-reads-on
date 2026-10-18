@@ -78,15 +78,38 @@ async function sendWebResponse(res, response, { decoded = false } = {}) {
   res.end(body);
 }
 
-/** Add the cookies a middleware response sets to the request's cookie header. */
+/**
+ * The request's cookie header with a middleware response's Set-Cookie
+ * applied: set by name, or removed when expired (Max-Age<=0 or a past Expires).
+ */
 function applyResponseCookiesToRequest(req, response, headers) {
-  const cookies = response.headers.getSetCookie().map((c) => c.split(";")[0].trim()).filter((c) => c.includes("="));
-  if (!cookies.length) return headers;
-  const existing = headers.get("cookie");
-  const cookie = [existing, ...cookies].filter(Boolean).join("; ");
+  const setCookies = response.headers.getSetCookie();
+  if (!setCookies.length) return headers;
+  const jar = new Map();
+  for (const part of (headers.get("cookie") || "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0) jar.set(part.slice(0, eq).trim(), part.slice(eq + 1).trim());
+  }
+  for (const setCookie of setCookies) {
+    const [pair, ...attrs] = setCookie.split(";");
+    const eq = pair.indexOf("=");
+    if (eq <= 0) continue;
+    const name = pair.slice(0, eq).trim();
+    const expired = attrs.some((attr) => {
+      const [key, value = ""] = attr.split("=").map((x) => x.trim());
+      if (/^max-age$/i.test(key)) return Number(value) <= 0;
+      if (/^expires$/i.test(key)) return Date.parse(value) <= Date.now();
+      return false;
+    });
+    if (expired) jar.delete(name);
+    else jar.set(name, pair.slice(eq + 1).trim());
+  }
+  const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
   const next = new Headers(headers);
-  next.set("cookie", cookie);
-  req.headers.cookie = cookie;
+  if (cookie) next.set("cookie", cookie);
+  else next.delete("cookie");
+  if (cookie) req.headers.cookie = cookie;
+  else delete req.headers.cookie;
   return next;
 }
 

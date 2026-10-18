@@ -44,6 +44,12 @@ function middleware(request) {
     res.cookies.set("from-mw", "yes");
     return res;
   }
+  if (pathname === "/replace-cookie") {
+    const res = NextResponse.next();
+    res.cookies.set("a", "2");
+    res.cookies.delete("gone");
+    return res;
+  }
   if (pathname === "/gated") {
     const headers = new Headers(request.headers);
     headers.set("cookie", "mw=1");
@@ -143,4 +149,9 @@ test("cookies middleware sets are in the request's cookies for rendering", async
   assert.equal(req.headers.cookie, "a=1; from-mw=yes");
   assert.equal(request.headers.get("cookie"), "a=1; from-mw=yes");
   assert.match([].concat(res.headers["set-cookie"]).join(), /from-mw=yes/);
+});
+
+test("cookies middleware overwrites or deletes are what rendering sees", async () => {
+  const { req } = await run("/replace-cookie", { cookie: "a=1; gone=x; keep=y" });
+  assert.equal(req.headers.cookie, "a=2; keep=y");
 });
