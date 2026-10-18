@@ -13,6 +13,7 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./unified-request-context": "./dist/unified-request-context.js",
     "./package.json": "./package.json"
   },
   "files": [
