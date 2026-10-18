@@ -48,6 +48,39 @@ test("the RSC payload is inlined as scripts before </body></html>", async () => 
   assert.equal(pushed, '0:{"a":"</script>"}\n');
 });
 
+test("the RSC payload is not inlined between chunks React writes in one flush", async () => {
+  // React splits a long script (an error's $RX call) across chunks it enqueues together.
+  const html = streamOf(["<!DOCTYPE html><html><head></head><body><script>$RX(\"B:0\",", "\"msg\")</script>", "</body></html>"]);
+  const rsc = streamOf(['0:"x"\n']);
+  const out = await text(injectPayload(html, rsc));
+  assert.ok(out.includes('<script>$RX("B:0","msg")</script>'), out);
+  assert.match(out, /__VINEXT_RSC__/);
+  assert.ok(out.endsWith("</body></html>"));
+});
+
+test("a client leaving before held HTML is sent does not fail the server", async () => {
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const html = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("<!DOCTYPE html><html><body>"));
+      },
+    });
+    const reader = injectPayload(html, streamOf([])).getReader();
+    const read = reader.read();
+    // Let the chunk reach the transform; its HTML is held until a timer fires.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    await reader.cancel();
+    await read;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("notFound/forbidden/redirect throw errors recognised by digest", () => {
   const caught = (fn) => {
     try {
@@ -78,6 +111,8 @@ test("the app manifest lists routes and a loader for every file they name", () =
   assert.match(src, /"blog\/\[slug\]\/layout.tsx": \(\) => import\("\/app\/app\/blog\/\[slug\]\/layout.tsx"\)/);
   assert.match(src, /"not-found.tsx": \(\) => import/);
   assert.ok(!src.includes("counter.tsx"), "plain modules get no loader");
+  const withGlobal = generateAppManifest("/app/app", ["layout.tsx", "page.tsx", "global-error.tsx"]);
+  assert.match(withGlobal, /"global-error.tsx": \(\) => import/);
 });
 
 test("the app manifest loads metadata routes: modules as they are, static files through a virtual module", () => {
