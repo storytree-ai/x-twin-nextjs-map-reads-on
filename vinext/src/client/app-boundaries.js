@@ -38,10 +38,18 @@ export function HttpFallbackBoundary(props) {
   return createElement(HttpFallbackBoundaryInner, { ...props, pathname });
 }
 
+/** The error a server render caught for this boundary, as an Error again. */
+function errorFrom(serverError) {
+  if (!serverError) return null;
+  const error = new Error(serverError.message);
+  if (serverError.digest !== undefined) error.digest = serverError.digest;
+  return error;
+}
+
 class ErrorBoundaryInner extends Component {
   constructor(props) {
     super(props);
-    this.state = { error: null, pathname: props.pathname };
+    this.state = { error: errorFrom(props.serverError), pathname: props.pathname };
     this.reset = () => this.setState({ error: null });
   }
   static getDerivedStateFromError(error) {
@@ -60,7 +68,12 @@ class ErrorBoundaryInner extends Component {
   }
 }
 
-/** error.tsx: renders the segment's error component when a child throws. */
+/**
+ * error.tsx (or global-error.tsx): renders the segment's error component when
+ * a child throws. `serverError` ({ message, digest }) starts it showing an
+ * error the server's render caught, which HTML rendering cannot do itself;
+ * reset() then renders the children.
+ */
 export function ErrorBoundary(props) {
   const pathname = useContext(PathnameContext);
   return createElement(ErrorBoundaryInner, { ...props, pathname });

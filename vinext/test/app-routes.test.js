@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildAppRoutes, matchAppRoute } from "../src/routing/app-routes.js";
+import { buildAppRoutes, matchAppRoute, nextErrorBoundary } from "../src/routing/app-routes.js";
 
 const files = [
   "layout.tsx",
@@ -108,4 +108,26 @@ test("each level records the params its dynamic segment binds", () => {
     blog.levels.map((l) => l.paramName),
     [null, null, "slug"],
   );
+});
+
+test("a render error goes to the nearest error.tsx above where it was thrown, then global-error", () => {
+  const { routes, root } = buildAppRoutes([
+    "layout.tsx",
+    "global-error.tsx",
+    "a/error.tsx",
+    "a/layout.tsx",
+    "a/b/c/error.tsx",
+    "a/b/c/page.tsx",
+  ]);
+  const { levels } = matchAppRoute(routes, "/a/b/c").route;
+  const hasGlobal = Boolean(root.globalError);
+  // The page threw: the error.tsx beside it catches.
+  assert.equal(nextErrorBoundary(levels, Infinity, hasGlobal), 3);
+  // That boundary's layout threw too: the next error.tsx up, skipping b/.
+  assert.equal(nextErrorBoundary(levels, 3, hasGlobal), 1);
+  // a/layout threw: only global-error is left.
+  assert.equal(nextErrorBoundary(levels, 1, hasGlobal), -1);
+  // The root layout threw under global-error, or there is no global-error.
+  assert.equal(nextErrorBoundary(levels, -1, hasGlobal), null);
+  assert.equal(nextErrorBoundary(levels, 1, false), null);
 });

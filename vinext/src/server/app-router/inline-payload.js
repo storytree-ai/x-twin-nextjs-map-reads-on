@@ -30,23 +30,34 @@ export function injectPayload(htmlStream, rscStream, { nonce } = {}) {
     const tail = rscDecoder.decode();
     if (tail) pending.push(payloadScript(tail, nonce));
   })();
+  // React writes one flush as several chunks in the same task, splitting long
+  // scripts between them, so HTML is held until the task ends and payload
+  // scripts go only between flushes.
+  let html = "";
+  let scheduled = null;
   let sawBodyEnd = false;
+  const emit = (controller) => {
+    scheduled = null;
+    if (html.endsWith(BODY_END)) {
+      html = html.slice(0, -BODY_END.length);
+      sawBodyEnd = true;
+    }
+    if (html) controller.enqueue(encoder.encode(html));
+    html = "";
+    if (pending.length) controller.enqueue(encoder.encode(pending.splice(0).join("")));
+  };
   return htmlStream.pipeThrough(
     new TransformStream({
       transform(chunk, controller) {
-        let html = decoder.decode(chunk, { stream: true });
-        if (html.endsWith(BODY_END)) {
-          html = html.slice(0, -BODY_END.length);
-          sawBodyEnd = true;
-        }
-        controller.enqueue(encoder.encode(html));
-        if (pending.length) controller.enqueue(encoder.encode(pending.splice(0).join("")));
+        html += decoder.decode(chunk, { stream: true });
+        scheduled ??= new Promise((resolve) => setTimeout(resolve, 0)).then(() => emit(controller));
       },
       async flush(controller) {
-        const rest = decoder.decode();
-        if (rest) controller.enqueue(encoder.encode(rest));
+        await scheduled;
+        html += decoder.decode();
+        emit(controller);
         await rscFinished;
-        if (pending.length) controller.enqueue(encoder.encode(pending.splice(0).join("")));
+        emit(controller);
         if (sawBodyEnd) controller.enqueue(encoder.encode(BODY_END));
       },
     }),
