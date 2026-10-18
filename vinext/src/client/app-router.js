@@ -38,8 +38,8 @@ export function commitPayload(payload) {
 
 function createRouter() {
   const go = (href, options, mode) => {
-    if (navigateImpl) navigateImpl(href, { scroll: options?.scroll !== false, mode });
-    else if (typeof window !== "undefined") window.location[mode === "replace" ? "replace" : "assign"](href);
+    if (navigateImpl) return navigateImpl(href, { scroll: options?.scroll !== false, mode });
+    if (typeof window !== "undefined") window.location[mode === "replace" ? "replace" : "assign"](href);
   };
   return {
     push: (href, options) => go(href, options, "push"),
@@ -95,7 +95,7 @@ export function AppRoot({ initialPayload, fetchPayload }) {
       }
       if (result.redirect) {
         if (depth > 10) return;
-        navigate(result.redirect, { scroll, mode: mode === "pop" ? "replace" : mode === "refresh" ? "replace" : mode, depth: depth + 1 });
+        return navigate(result.redirect, { scroll, mode: mode === "pop" ? "replace" : mode === "refresh" ? "replace" : mode, depth: depth + 1 });
         return;
       }
       if (mode === "push") window.history.pushState({ __vinext: true }, "", url.href);
@@ -106,8 +106,10 @@ export function AppRoot({ initialPayload, fetchPayload }) {
     }
     navigateImpl = navigate;
     const commit = (payload) => {
-      // Dropped if the router has since moved to another URL.
-      if (payload.pathname !== window.location.pathname || (payload.search || "") !== window.location.search) return;
+      // Dropped if the router has since moved to another URL (payload pathnames
+      // have no trailing slash, as RSC URLs drop it).
+      const pathname = window.location.pathname.replace(/(.)\/+$/, "$1");
+      if (payload.pathname !== pathname || (payload.search || "") !== window.location.search) return;
       startTransition(() => {
         setState((prev) => ({ payload: fulfilled(payload), navId: prev.navId + 1, scroll: false }));
       });

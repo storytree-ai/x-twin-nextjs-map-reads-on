@@ -14,6 +14,7 @@ import {
 } from "@vitejs/plugin-rsc/browser";
 import { AppRoot, router, navigate, commitPayload } from "./app-router.js";
 import { rscUrl } from "../shared/rsc-url.js";
+import { redirect as redirectTo } from "../shims/internal/navigation-errors.js";
 
 function inlinePayloadStream() {
   const encoder = new TextEncoder();
@@ -46,7 +47,7 @@ async function fetchPayload(url) {
 /**
  * React's callServer: run server action `id` with `args`. The response's
  * re-rendered page (after revalidatePath or a cookie write) is committed; a
- * redirect() navigates, the call settling once the target is committed.
+ * redirect() navigates, the call rejecting with it once the target is committed.
  */
 async function callServer(id, args) {
   const temporaryReferences = createTemporaryReferenceSet();
@@ -60,7 +61,9 @@ async function callServer(id, args) {
   if (redirect) {
     const mode = response.headers.get("x-vinext-redirect-type") === "replace" ? "replace" : "push";
     await navigate(redirect, { mode });
-    return undefined;
+    // As in Next.js, the call rejects with the redirect (never resolving to an
+    // undefined useActionState state); RedirectBoundary drops it once there.
+    redirectTo(redirect, mode);
   }
   if (!(response.headers.get("content-type") || "").includes("text/x-component")) {
     throw new Error(`Server action failed (${response.status}): ${await response.text()}`);

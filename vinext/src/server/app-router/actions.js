@@ -39,6 +39,8 @@ export async function runServerAction(ctx, rsc) {
     } catch {
       return { kind, notFound: true };
     }
+    // plugin-rsc loads a known module's missing export as undefined.
+    if (typeof action !== "function") return { kind, notFound: true };
     const args = await rsc.decodeReply(body, { temporaryReferences });
     try {
       return { kind, temporaryReferences, returnValue: { ok: true, data: await action.apply(null, args) } };

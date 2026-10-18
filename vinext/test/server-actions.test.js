@@ -15,6 +15,8 @@ function fakeRsc(actions) {
       return typeof body === "string" ? JSON.parse(body) : [body];
     },
     async loadServerAction(id) {
+      // Like plugin-rsc: a known module with no such export loads as undefined.
+      if (id.startsWith("known-module#")) return undefined;
       if (!actions[id]) throw new Error(`unknown action ${id}`);
       return actions[id];
     },
@@ -67,6 +69,8 @@ test("an action's error is returned to the caller, an unknown action is not foun
   assert.equal(failed.returnValue.data.message, "nope");
   const unknown = await inAction(actionRequest("missing", []), (ctx) => runServerAction(ctx, rsc));
   assert.equal(unknown.notFound, true);
+  const noExport = await inAction(actionRequest("known-module#missing", []), (ctx) => runServerAction(ctx, rsc));
+  assert.equal(noExport.notFound, true, "a module without the named export is not found either");
 });
 
 test("redirect() in an action is a push redirect, its cookies kept", async () => {
