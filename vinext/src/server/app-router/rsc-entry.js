@@ -24,7 +24,9 @@ import { parseRscPath } from "../../shared/rsc-url.js";
 import { callRouteHandler } from "./route-handler.js";
 import { createInstrumentation } from "../instrumentation.js";
 import { actionRequestKind, runServerAction, endActionPhase } from "./actions.js";
-import { resolveSegmentConfig, finalizeCacheControl } from "./segment-config.js";
+import { resolveSegmentConfig, finalizeCacheControl, NO_STORE } from "./segment-config.js";
+import { serveWithIsr } from "./isr-cache.js";
+import { installFetchCache } from "../../shims/internal/fetch-cache.js";
 import {
   createRequestContext,
   runWithRequestContext,
@@ -32,6 +34,8 @@ import {
   scheduleAfter,
   applyResponseCookies,
 } from "../../shims/internal/request-context.js";
+
+installFetchCache();
 
 const HTTP_FALLBACK_FILE = { 404: "notFound", 403: "forbidden", 401: "unauthorized" };
 
@@ -308,13 +312,13 @@ async function renderPage(url, isRsc, match, report, action = {}) {
       const config = status === 200 && match && !caught ? await segmentConfigOf(match.route) : null;
       const isDynamic = () => Boolean(getRequestContext()?.dynamic);
       if (isRsc) {
-        if (!config) return rscResponse(stream, status);
+        if (!config) return rscResponse(stream, status, status >= 400 ? { "Cache-Control": NO_STORE } : {});
         const { body, cacheControl } = await finalizeCacheControl(stream, config, isDynamic);
         return rscResponse(body, status, cacheControl ? { "Cache-Control": cacheControl } : {});
       }
       const ssr = await import.meta.viteRsc.loadModule("ssr", "index");
       const html = await ssr.renderHtml(stream, { formState: action.payload?.formState });
-      if (!config) return htmlResponse(html, status, null);
+      if (!config) return htmlResponse(html, status, status >= 400 ? NO_STORE : null);
       const { body, cacheControl } = await finalizeCacheControl(html, config, isDynamic);
       return htmlResponse(body, status, cacheControl);
     } catch (error) {
@@ -348,7 +352,7 @@ function bareFallbackResponse(status) {
   const text = status === 404 ? "This page could not be found." : status === 403 ? "Forbidden" : "Unauthorized";
   return new Response(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${status}</title></head><body><h1>${status}</h1><p>${text}</p></body></html>`, {
     status,
-    headers: { "Content-Type": "text/html; charset=utf-8" },
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": NO_STORE },
   });
 }
 
@@ -362,6 +366,25 @@ function htmlResponse(stream, status, cacheControl) {
 async function segmentConfigOf(route) {
   const mods = await Promise.all([...route.levels.map((l) => load(l.layout)), load(route.file)]);
   return resolveSegmentConfig(mods);
+}
+
+// ISR caches pages under vinext start; vinext dev renders every request, as Next.js does.
+const ISR_ENABLED = !import.meta.env.DEV;
+
+/**
+ * A GET page render, answered from the ISR cache when the page has a finite
+ * revalidate. Each render (and background regeneration) gets its own request
+ * context, so the tags it used are known.
+ */
+function renderPageCached(request, url, isRsc, match, report) {
+  if (!ISR_ENABLED || !match || request.method !== "GET") return renderPage(url, isRsc, match, report);
+  return serveWithIsr(`${isRsc ? "rsc" : "html"}:${url.pathname}`, () => {
+    const ctx = createRequestContext(request, { phase: "render" });
+    return runWithRequestContext(ctx, async () => {
+      const response = await renderPage(url, isRsc, match, report);
+      return { response: scheduleAfter(ctx, response), tags: [...(ctx.cacheTags || [])] };
+    });
+  });
 }
 
 const rscDecoders = { createTemporaryReferenceSet, decodeReply, decodeAction, decodeFormState, loadServerAction };
@@ -447,7 +470,7 @@ export default async function handler(request) {
   const rsc = isRsc || request.headers.get("rsc") === "1";
   return runWithRequestContext(ctx, async () => {
     try {
-      const response = isAction ? await handleAction(ctx, pageUrl, rsc, match, report) : await renderPage(pageUrl, rsc, match, report);
+      const response = isAction ? await handleAction(ctx, pageUrl, rsc, match, report) : await renderPageCached(request, pageUrl, rsc, match, report);
       return scheduleAfter(ctx, applyResponseCookies(ctx, response));
     } catch (error) {
       report(error);
