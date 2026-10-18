@@ -148,7 +148,7 @@ export function generateAppManifest(appDir, files, { middleware = null, instrume
   const { routes, root } = buildAppRoutes(files);
   const used = new Set();
   const collect = (level) => {
-    for (const key of ["layout", "template", "error", "loading", "notFound", "forbidden", "unauthorized"]) {
+    for (const key of ["layout", "template", "error", "loading", "notFound", "forbidden", "unauthorized", "globalError"]) {
       if (level[key]) used.add(level[key]);
     }
   };

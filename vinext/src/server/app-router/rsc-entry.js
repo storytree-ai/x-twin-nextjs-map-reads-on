@@ -15,7 +15,7 @@ import {
 } from "@vitejs/plugin-rsc/rsc";
 import { routes, root, loaders, loadMiddleware as middlewareLoader, loadInstrumentation } from "virtual:vinext-app-manifest";
 import serverConfig from "virtual:vinext-server-config";
-import { matchAppRoute } from "../../routing/app-routes.js";
+import { matchAppRoute, nextErrorBoundary } from "../../routing/app-routes.js";
 import { ErrorBoundary, HttpFallbackBoundary, RedirectBoundary, LayoutSegments } from "../../client/app-boundaries.js";
 import { httpFallbackStatus, redirectInfo, isNavigationError } from "../../shims/internal/navigation-errors.js";
 import { renderHead } from "./metadata.js";
@@ -105,9 +105,10 @@ function defaultFallback(status) {
  * level wraps its children as Next.js does:
  * Layout > Template > ErrorBoundary > Suspense(loading) > HttpFallbackBoundary > children.
  * With `fallback` ({ level, element }), levels below `level` are dropped and
- * that level's children are the fallback element.
+ * that level's children are the fallback element. With `caught`
+ * ({ level, serverError }), that level's error boundary starts showing the error.
  */
-async function buildTree(levels, params, leaf, { fallback, pathname } = {}) {
+async function buildTree(levels, params, leaf, { fallback, pathname, caught } = {}) {
   const last = fallback ? fallback.level : levels.length - 1;
   const mods = await Promise.all(
     levels.slice(0, last + 1).map(async (level) => {
@@ -132,7 +133,10 @@ async function buildTree(levels, params, leaf, { fallback, pathname } = {}) {
       });
     }
     if (!fallback && mod.loading) node = createElement(Suspense, { fallback: createElement(mod.loading.default) }, node);
-    if (mod.error) node = createElement(ErrorBoundary, { errorComponent: mod.error.default }, node);
+    if (mod.error) {
+      const serverError = caught?.level === i ? caught.serverError : undefined;
+      node = createElement(ErrorBoundary, { errorComponent: mod.error.default, serverError }, node);
+    }
     if (mod.template) node = createElement(mod.template.default, { key: pathname }, node);
     if (mod.layout) {
       const segments = fallback ? [] : segmentsBelow(levels, i, params);
@@ -169,13 +173,21 @@ function MetadataError({ error }) {
 }
 
 /** Root-level tree for URLs no route matches. */
-async function notFoundTree(url) {
+async function notFoundTree(url, caught) {
   const levels = [root];
   const mod = await load(root.notFound);
   const element = mod ? createElement(mod.default) : defaultFallback(404);
   const head = await headElements(levels, 0, mod, {}, url, { noindex: true });
-  const tree = await buildTree(levels, {}, null, { fallback: { level: 0, element: withHead(head, element) }, pathname: url.pathname });
+  const tree = await buildTree(levels, {}, null, { fallback: { level: 0, element: withHead(head, element) }, pathname: url.pathname, caught });
   return root.layout ? tree : createElement("html", null, createElement("body", null, tree));
+}
+
+/** global-error.tsx around the root layout, showing `caught`'s error when it is the boundary. */
+async function withGlobalError(tree, caught) {
+  const mod = await load(root.globalError);
+  if (!mod) return tree;
+  const serverError = caught?.level === -1 ? caught.serverError : undefined;
+  return createElement(ErrorBoundary, { errorComponent: mod.default, serverError }, tree);
 }
 
 function withHead(head, node) {
@@ -183,7 +195,7 @@ function withHead(head, node) {
 }
 
 /** The tree for a matched route, with its metadata. */
-async function routeTree(match, url) {
+async function routeTree(match, url, caught) {
   const { route, params } = match;
   const leaf = await pageElement(route, params, url.searchParams);
   const leafMod = await load(route.file);
@@ -193,16 +205,16 @@ async function routeTree(match, url) {
   } catch (error) {
     // notFound()/redirect() from generateMetadata act as the page's own would.
     if (isNavigationError(error)) throw error;
-    return buildTree(route.levels, params, createElement(MetadataError, { error }), { pathname: url.pathname });
+    return buildTree(route.levels, params, createElement(MetadataError, { error }), { pathname: url.pathname, caught });
   }
-  return buildTree(route.levels, params, withHead(head, leaf), { pathname: url.pathname });
+  return buildTree(route.levels, params, withHead(head, leaf), { pathname: url.pathname, caught });
 }
 
 /**
  * The tree rendering the nearest notFound/forbidden/unauthorized boundary
  * above level `below` inside the route's layouts, and that boundary's level.
  */
-async function fallbackTree(match, url, status, below) {
+async function fallbackTree(match, url, status, below, caught) {
   const { route, params } = match;
   const key = HTTP_FALLBACK_FILE[status];
   let level = Math.min(below - 1, route.levels.length - 1);
@@ -211,7 +223,7 @@ async function fallbackTree(match, url, status, below) {
   const mod = await load(file);
   const element = mod ? createElement(mod.default) : defaultFallback(status);
   const head = await headElements(route.levels, level, mod, params, url, { noindex: status === 404 });
-  const tree = await buildTree(route.levels, params, null, { fallback: { level, element: withHead(head, element) }, pathname: url.pathname });
+  const tree = await buildTree(route.levels, params, null, { fallback: { level, element: withHead(head, element) }, pathname: url.pathname, caught });
   return { tree, level };
 }
 
@@ -225,7 +237,7 @@ function payloadFor(tree, url, params, extra) {
   };
 }
 
-function rscOptions(errors, report, temporaryReferences) {
+function rscOptions(errors, report, temporaryReferences, { quiet = false } = {}) {
   return {
     temporaryReferences,
     onError(error) {
@@ -234,7 +246,7 @@ function rscOptions(errors, report, temporaryReferences) {
         return error.digest;
       }
       errors.push(error);
-      if (!isNavigationError(error)) {
+      if (!quiet && !isNavigationError(error)) {
         console.error(error);
         report(error);
       }
@@ -258,31 +270,42 @@ function redirectResponse(info, isRsc) {
 /**
  * Render a page. notFound()/forbidden()/unauthorized() thrown outside any
  * Suspense boundary re-renders with the nearest fallback boundary; if a
- * layout keeps throwing, each retry moves the boundary above it. After a
- * server action, `action` holds what the payload carries besides the page
- * (its return value or form state) and the call's temporary references.
+ * layout keeps throwing, each retry moves the boundary above it. Any other
+ * error that fails the HTML shell re-renders with the nearest error.tsx (or
+ * global-error.tsx) showing it, moving up the same way; the RSC payload
+ * carries the error to the client's boundaries itself. After a server
+ * action, `action` holds what the payload carries besides the page (its
+ * return value or form state) and the call's temporary references.
  */
 async function renderPage(url, isRsc, match, report, action = {}) {
   const params = match ? match.params : {};
+  const levels = match ? match.route.levels : [root];
   let fallbackStatus = null;
   let below = Infinity;
+  // The error boundary showing a render error ({ level, serverError }), and
+  // whether the render's errors have been reported (retries render them again).
+  let caught = null;
+  let reported = false;
   for (;;) {
     let status = match ? 200 : 404;
+    const rscErrors = [];
     try {
       let tree;
       if (fallbackStatus === null) {
-        tree = match ? await routeTree(match, url) : await notFoundTree(url);
+        tree = match ? await routeTree(match, url, caught) : await notFoundTree(url, caught);
       } else {
-        const fallback = await fallbackTree(match, url, fallbackStatus, below);
+        const fallback = await fallbackTree(match, url, fallbackStatus, below, caught);
         tree = fallback.tree;
         below = fallback.level;
         status = fallbackStatus;
       }
+      if (caught) status = caught.level === -1 ? 500 : status;
+      tree = await withGlobalError(tree, caught);
       const stream = renderToReadableStream(
         payloadFor(tree, url, params, action.payload),
-        rscOptions([], report, action.temporaryReferences),
+        rscOptions(rscErrors, report, action.temporaryReferences, { quiet: reported }),
       );
-      const config = status === 200 && match ? await segmentConfigOf(match.route) : null;
+      const config = status === 200 && match && !caught ? await segmentConfigOf(match.route) : null;
       const isDynamic = () => Boolean(getRequestContext()?.dynamic);
       if (isRsc) {
         if (!config) return rscResponse(stream, status);
@@ -298,12 +321,27 @@ async function renderPage(url, isRsc, match, report, action = {}) {
       const redirect = redirectInfo(error);
       if (redirect) return redirectResponse(redirect, isRsc);
       const thrownStatus = httpFallbackStatus(error);
-      if (thrownStatus === null) throw error;
+      if (thrownStatus === null) {
+        const level = isRsc ? null : nextErrorBoundary(levels, caught ? caught.level : Infinity, Boolean(root.globalError));
+        if (level === null) throw error;
+        // A server component's error was reported as the RSC render failed; one thrown while rendering HTML was not.
+        if (!reported && !rscErrors.some((e) => !isNavigationError(e))) report(error);
+        reported = true;
+        caught = { level, serverError: serverErrorOf(error) };
+        continue;
+      }
       // No layout left to render the fallback inside (the root layout threw).
       if (!match || (fallbackStatus !== null && below <= 0)) return bareFallbackResponse(thrownStatus);
       fallbackStatus = thrownStatus;
     }
   }
+}
+
+/** What an error boundary is told of an error the server caught: its message, and digest if it has one. */
+function serverErrorOf(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const digest = error && typeof error === "object" && typeof error.digest === "string" ? error.digest : undefined;
+  return digest === undefined ? { message } : { message, digest };
 }
 
 function bareFallbackResponse(status) {

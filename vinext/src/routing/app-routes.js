@@ -177,6 +177,20 @@ export function buildAppRoutes(files) {
   return { routes, root };
 }
 
+/**
+ * Where a render error that failed the HTML shell is caught: the deepest
+ * level above `below` with an error.tsx (whose boundary sits inside that
+ * level's layout, so it catches errors from deeper levels and the page),
+ * -1 for global-error.tsx (around the root layout), or null when none is left.
+ * `below` is the level whose boundary failed last (Infinity at first).
+ */
+export function nextErrorBoundary(levels, below, hasGlobalError) {
+  for (let i = Math.min(below - 1, levels.length - 1); i >= 0; i--) {
+    if (levels[i].error) return i;
+  }
+  return below >= 0 && hasGlobalError ? -1 : null;
+}
+
 /** First route matching the pathname, with its decoded params, or null. */
 export function matchAppRoute(routes, pathname) {
   const clean = pathname.split("?")[0].split("#")[0];
