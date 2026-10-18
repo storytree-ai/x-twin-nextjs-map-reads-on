@@ -44,3 +44,26 @@ export async function finalizeCacheControl(stream, config, isDynamic) {
   const body = new Uint8Array(await new Response(stream).arrayBuffer());
   return { body, cacheControl: pageCacheControl(config, isDynamic()) };
 }
+
+/**
+ * Whether `params` may render, given modules ordered root layout first,
+ * page last: with dynamicParams = false (on any of them), only params
+ * generateStaticParams returns do. Each generateStaticParams runs once for
+ * every params set its parents generated, as in Next.js.
+ */
+export async function staticParamsAllow(mods, params) {
+  if (resolveSegmentConfig(mods).dynamicParams !== false) return true;
+  let generated = [];
+  let parents = [{}];
+  for (const mod of mods) {
+    if (typeof mod?.generateStaticParams !== "function") continue;
+    const next = [];
+    for (const parent of parents) {
+      const list = (await mod.generateStaticParams({ params: parent })) || [];
+      for (const entry of list) next.push({ ...parent, ...entry });
+    }
+    generated = parents = next;
+  }
+  const same = (a, b) => (Array.isArray(a) || Array.isArray(b) ? [].concat(a ?? []).map(String).join("/") === [].concat(b ?? []).map(String).join("/") : String(a) === String(b));
+  return generated.some((entry) => Object.keys(entry).every((key) => same(entry[key], params[key])));
+}

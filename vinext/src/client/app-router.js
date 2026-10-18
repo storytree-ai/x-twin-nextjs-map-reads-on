@@ -3,7 +3,7 @@
  * in the browser: it renders the current RSC payload's tree under the
  * next/navigation contexts, and navigates by fetching RSC payloads.
  */
-import { createElement, startTransition, use, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { createElement, startTransition, use, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AppRouterContext,
   PathnameContext,
@@ -11,6 +11,7 @@ import {
   ParamsContext,
 } from "../shims/internal/app-contexts.js";
 import { rscUrl } from "../shared/rsc-url.js";
+import { installHistorySync } from "./history-sync.js";
 
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
@@ -56,15 +57,29 @@ export const router = createRouter();
 
 /**
  * Root of the App Router tree. `initialPayload` is a promise of the RSC
- * payload ({ tree, pathname, search, params }); `fetchPayload(url)` returns a
- * promise of { payload } or { redirect } / { reload } for a navigation.
+ * payload ({ tree, pathname, search, params }); `fetchPayload(url, { from })`
+ * returns a promise of { payload } or { redirect } / { reload } for a
+ * navigation from the URL `from`. The app's own history.pushState and
+ * replaceState calls move the URL the hooks report (`shallow`) without a fetch.
  */
 export function AppRoot({ initialPayload, fetchPayload }) {
-  const [state, setState] = useState(() => ({ payload: initialPayload, navId: 0, scroll: false }));
+  const [state, setState] = useState(() => ({ payload: initialPayload, navId: 0, scroll: false, shallow: null }));
   const payload = use(state.payload);
+  const pathname = state.shallow ? state.shallow.pathname : payload.pathname;
+  const search = state.shallow ? state.shallow.search : payload.search || "";
+  // The URL the router shows, sent with a navigation for intercepting routes.
+  const shown = useRef(pathname + search);
+
+  useIsomorphicLayoutEffect(() => {
+    shown.current = pathname + search;
+  }, [pathname, search]);
 
   useEffect(() => {
     if (!fetchPayload) return;
+    const history = installHistorySync(window.history, (href) => {
+      const url = new URL(href, window.location.href);
+      setState((prev) => ({ ...prev, shallow: { pathname: url.pathname, search: url.search } }));
+    });
     let latest = 0;
     async function navigate(href, { scroll = true, mode = "push", depth = 0 } = {}) {
       const url = new URL(href, window.location.href);
@@ -75,14 +90,14 @@ export function AppRoot({ initialPayload, fetchPayload }) {
       const current = window.location.pathname + window.location.search;
       const target = url.pathname + url.search;
       if (mode === "push" && target === current && url.hash) {
-        window.history.pushState(window.history.state, "", url.href);
+        history.pushState(window.history.state, url.href);
         document.getElementById(decodeURIComponent(url.hash.slice(1)))?.scrollIntoView();
         return;
       }
       const id = ++latest;
       let result;
       try {
-        result = await fetchPayload(rscUrl(url.href));
+        result = await fetchPayload(rscUrl(url.href), { from: shown.current });
       } catch (err) {
         console.error(err);
         window.location.assign(url.href);
@@ -98,10 +113,15 @@ export function AppRoot({ initialPayload, fetchPayload }) {
         return navigate(result.redirect, { scroll, mode: mode === "pop" ? "replace" : mode === "refresh" ? "replace" : mode, depth: depth + 1 });
         return;
       }
-      if (mode === "push") window.history.pushState({ __vinext: true }, "", url.href);
-      else if (mode === "replace") window.history.replaceState({ __vinext: true }, "", url.href);
+      if (mode === "push") history.pushState({ __vinext: true }, url.href);
+      else if (mode === "replace") history.replaceState({ __vinext: true }, url.href);
       startTransition(() => {
-        setState((prev) => ({ payload: fulfilled(result.payload), navId: prev.navId + 1, scroll: scroll && mode !== "pop" && mode !== "refresh" }));
+        setState((prev) => ({
+          payload: fulfilled(result.payload),
+          navId: prev.navId + 1,
+          scroll: scroll && mode !== "pop" && mode !== "refresh",
+          shallow: null,
+        }));
       });
     }
     navigateImpl = navigate;
@@ -111,15 +131,16 @@ export function AppRoot({ initialPayload, fetchPayload }) {
       const pathname = window.location.pathname.replace(/(.)\/+$/, "$1");
       if (payload.pathname !== pathname || (payload.search || "") !== window.location.search) return;
       startTransition(() => {
-        setState((prev) => ({ payload: fulfilled(payload), navId: prev.navId + 1, scroll: false }));
+        setState((prev) => ({ payload: fulfilled(payload), navId: prev.navId + 1, scroll: false, shallow: null }));
       });
     };
     commitImpl = commit;
-    window.history.replaceState({ __vinext: true, ...(window.history.state || {}) }, "", window.location.href);
+    history.replaceState({ __vinext: true, ...(window.history.state || {}) }, window.location.href);
     const onPopState = () => navigate(window.location.href, { mode: "pop" });
     window.addEventListener("popstate", onPopState);
     return () => {
       window.removeEventListener("popstate", onPopState);
+      history.restore();
       if (navigateImpl === navigate) navigateImpl = null;
       if (commitImpl === commit) commitImpl = null;
     };
@@ -135,10 +156,10 @@ export function AppRoot({ initialPayload, fetchPayload }) {
     { value: router },
     createElement(
       PathnameContext.Provider,
-      { value: payload.pathname },
+      { value: pathname },
       createElement(
         SearchParamsContext.Provider,
-        { value: payload.search || "" },
+        { value: search },
         createElement(ParamsContext.Provider, { value: params }, payload.tree),
       ),
     ),

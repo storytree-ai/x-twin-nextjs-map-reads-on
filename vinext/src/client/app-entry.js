@@ -34,8 +34,10 @@ function inlinePayloadStream() {
   });
 }
 
-async function fetchPayload(url) {
-  const response = await fetch(url, { headers: { Accept: "text/x-component" } });
+async function fetchPayload(url, { from } = {}) {
+  const headers = { Accept: "text/x-component" };
+  if (from) headers["x-vinext-url"] = from;
+  const response = await fetch(url, { headers });
   const redirect = response.headers.get("x-vinext-redirect");
   if (redirect) return { redirect };
   if (response.headers.get("x-vinext-reload") || !(response.headers.get("content-type") || "").includes("text/x-component")) {
