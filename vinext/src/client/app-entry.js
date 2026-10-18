@@ -14,7 +14,7 @@ import {
 } from "@vitejs/plugin-rsc/browser";
 import { AppRoot, router, navigate, commitPayload, requestSource } from "./app-router.js";
 import { rscUrl } from "../shared/rsc-url.js";
-import { redirect as redirectTo } from "../shims/internal/navigation-errors.js";
+import { redirect as redirectTo, isNavigationError } from "../shims/internal/navigation-errors.js";
 
 function inlinePayloadStream() {
   const encoder = new TextEncoder();
@@ -78,10 +78,19 @@ async function callServer(id, args) {
 
 setServerCallback(callServer);
 
+/** As in Next.js, redirect()/notFound() caught by their boundaries are control flow, not logged. */
+function onCaughtError(error, errorInfo) {
+  if (isNavigationError(error)) return;
+  console.error(error, errorInfo.componentStack);
+}
+
 const initialPayload = createFromReadableStream(inlinePayloadStream());
 // After a form post, useActionState hydrates with the action's form state.
 initialPayload.then((payload) => {
-  hydrateRoot(document, createElement(AppRoot, { initialPayload, fetchPayload }), { formState: payload.formState ?? null });
+  hydrateRoot(document, createElement(AppRoot, { initialPayload, fetchPayload }), {
+    formState: payload.formState ?? null,
+    onCaughtError,
+  });
 });
 
 // Server component edits: refetch the current payload.
