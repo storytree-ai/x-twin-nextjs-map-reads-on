@@ -66,12 +66,23 @@ export function ErrorBoundary(props) {
   return createElement(ErrorBoundaryInner, { ...props, pathname });
 }
 
-function Redirect({ url, type }) {
+function Redirect({ url, type, onArrived }) {
   const router = useContext(AppRouterContext);
   useEffect(() => {
-    if (router) router[type === "push" ? "push" : "replace"](url);
-    else window.location.replace(url);
-  }, [router, url, type]);
+    const target = new URL(url, window.location.href);
+    const here = window.location;
+    // Already there (a server action's redirect, which the router has followed).
+    if (target.origin === here.origin && target.pathname === here.pathname && target.search === here.search) {
+      onArrived();
+      return;
+    }
+    if (!router) {
+      window.location.replace(url);
+      return;
+    }
+    // Render again once there, even if the target redirected back to this pathname.
+    Promise.resolve(router[type === "push" ? "push" : "replace"](url)).then(onArrived);
+  }, [router, url, type, onArrived]);
   return null;
 }
 
@@ -79,6 +90,7 @@ class RedirectBoundaryInner extends Component {
   constructor(props) {
     super(props);
     this.state = { redirect: null, error: null, pathname: props.pathname };
+    this.arrived = () => this.setState({ redirect: null, error: null });
   }
   static getDerivedStateFromError(error) {
     return { redirect: redirectInfo(error), error };
@@ -89,7 +101,7 @@ class RedirectBoundaryInner extends Component {
   }
   render() {
     if (this.state.error && !this.state.redirect) throw this.state.error;
-    if (this.state.redirect) return createElement(Redirect, this.state.redirect);
+    if (this.state.redirect) return createElement(Redirect, { ...this.state.redirect, onArrived: this.arrived });
     return this.props.children;
   }
 }

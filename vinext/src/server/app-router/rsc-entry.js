@@ -5,7 +5,14 @@
  * through the ssr environment, with HTML. route.ts handlers answer directly.
  */
 import { createElement, Fragment, Suspense } from "react";
-import { renderToReadableStream } from "@vitejs/plugin-rsc/rsc";
+import {
+  renderToReadableStream,
+  createTemporaryReferenceSet,
+  decodeReply,
+  decodeAction,
+  decodeFormState,
+  loadServerAction,
+} from "@vitejs/plugin-rsc/rsc";
 import { routes, root, loaders, loadMiddleware as middlewareLoader, loadInstrumentation } from "virtual:vinext-app-manifest";
 import serverConfig from "virtual:vinext-server-config";
 import { matchAppRoute } from "../../routing/app-routes.js";
@@ -15,12 +22,14 @@ import { resolveMetadata, renderMetadata } from "./metadata.js";
 import { parseRscPath } from "../../shared/rsc-url.js";
 import { callRouteHandler } from "./route-handler.js";
 import { createInstrumentation } from "../instrumentation.js";
+import { actionRequestKind, runServerAction, endActionPhase } from "./actions.js";
 import { resolveSegmentConfig, finalizeCacheControl } from "./segment-config.js";
 import {
   createRequestContext,
   runWithRequestContext,
   getRequestContext,
   scheduleAfter,
+  applyResponseCookies,
 } from "../../shims/internal/request-context.js";
 
 const HTTP_FALLBACK_FILE = { 404: "notFound", 403: "forbidden", 401: "unauthorized" };
@@ -193,8 +202,9 @@ async function fallbackTree(match, url, status, below) {
   return { tree, level };
 }
 
-function payloadFor(tree, url, params) {
+function payloadFor(tree, url, params, extra) {
   return {
+    ...extra,
     tree: createElement(RedirectBoundary, null, tree),
     pathname: url.pathname,
     search: url.search,
@@ -202,8 +212,9 @@ function payloadFor(tree, url, params) {
   };
 }
 
-function rscOptions(errors, report) {
+function rscOptions(errors, report, temporaryReferences) {
   return {
+    temporaryReferences,
     onError(error) {
       if (error && typeof error === "object" && typeof error.digest === "string") {
         errors.push(error);
@@ -234,9 +245,11 @@ function redirectResponse(info, isRsc) {
 /**
  * Render a page. notFound()/forbidden()/unauthorized() thrown outside any
  * Suspense boundary re-renders with the nearest fallback boundary; if a
- * layout keeps throwing, each retry moves the boundary above it.
+ * layout keeps throwing, each retry moves the boundary above it. After a
+ * server action, `action` holds what the payload carries besides the page
+ * (its return value or form state) and the call's temporary references.
  */
-async function renderPage(url, isRsc, match, report) {
+async function renderPage(url, isRsc, match, report, action = {}) {
   const params = match ? match.params : {};
   let fallbackStatus = null;
   let below = Infinity;
@@ -252,7 +265,10 @@ async function renderPage(url, isRsc, match, report) {
         below = fallback.level;
         status = fallbackStatus;
       }
-      const stream = renderToReadableStream(payloadFor(tree, url, params), rscOptions([], report));
+      const stream = renderToReadableStream(
+        payloadFor(tree, url, params, action.payload),
+        rscOptions([], report, action.temporaryReferences),
+      );
       const config = status === 200 && match ? await segmentConfigOf(match.route) : null;
       const isDynamic = () => Boolean(getRequestContext()?.dynamic);
       if (isRsc) {
@@ -261,7 +277,7 @@ async function renderPage(url, isRsc, match, report) {
         return rscResponse(body, status, cacheControl ? { "Cache-Control": cacheControl } : {});
       }
       const ssr = await import.meta.viteRsc.loadModule("ssr", "index");
-      const html = await ssr.renderHtml(stream);
+      const html = await ssr.renderHtml(stream, { formState: action.payload?.formState });
       if (!config) return htmlResponse(html, status, null);
       const { body, cacheControl } = await finalizeCacheControl(html, config, isDynamic);
       return htmlResponse(body, status, cacheControl);
@@ -295,6 +311,35 @@ function htmlResponse(stream, status, cacheControl) {
 async function segmentConfigOf(route) {
   const mods = await Promise.all([...route.levels.map((l) => load(l.layout)), load(route.file)]);
   return resolveSegmentConfig(mods);
+}
+
+const rscDecoders = { createTemporaryReferenceSet, decodeReply, decodeAction, decodeFormState, loadServerAction };
+
+/**
+ * Answer a POST that runs a server action. A client call gets an RSC payload
+ * with the action's return value, and the page re-rendered when the action
+ * revalidated or wrote cookies, or an x-vinext-redirect header for redirect();
+ * a form post gets the page (with the useActionState form state) or a 303.
+ */
+async function handleAction(ctx, url, isRsc, match, report) {
+  const result = await runServerAction(ctx, rscDecoders);
+  const rerender = endActionPhase(ctx);
+  if (result.kind === "fetch") {
+    if (result.notFound) return new Response("Server action not found.", { status: 404, headers: { "Content-Type": "text/plain" } });
+    if (result.redirect) {
+      return new Response(null, {
+        status: 200,
+        headers: { "x-vinext-redirect": result.redirect.url, "x-vinext-redirect-type": result.redirect.type },
+      });
+    }
+    if (!result.returnValue.ok) console.error(result.returnValue.data);
+    const payload = { returnValue: result.returnValue };
+    const { temporaryReferences } = result;
+    if (!rerender) return rscResponse(renderToReadableStream(payload, rscOptions([], report, temporaryReferences)), 200);
+    return renderPage(url, true, match, report, { payload, temporaryReferences });
+  }
+  if (result.redirect) return new Response(null, { status: 303, headers: { Location: result.redirect.url } });
+  return renderPage(url, isRsc, match, report, { payload: { formState: result.formState } });
 }
 
 async function handleRoute(request, match) {
@@ -335,12 +380,14 @@ export default async function handler(request) {
     if (isRsc) return new Response(null, { status: 200, headers: { "x-vinext-reload": "1" } });
     return handleRoute(request, match);
   }
-  const ctx = createRequestContext(request, { phase: "render" });
-  const report = (error) => reportRequestError(error, request, match?.route, "render");
+  const isAction = actionRequestKind(request) !== null;
+  const ctx = createRequestContext(request, { phase: isAction ? "action" : "render" });
+  const report = (error) => reportRequestError(error, request, match?.route, isAction ? "action" : "render");
+  const rsc = isRsc || request.headers.get("rsc") === "1";
   return runWithRequestContext(ctx, async () => {
     try {
-      const response = await renderPage(pageUrl, isRsc || request.headers.get("rsc") === "1", match, report);
-      return scheduleAfter(ctx, response);
+      const response = isAction ? await handleAction(ctx, pageUrl, rsc, match, report) : await renderPage(pageUrl, rsc, match, report);
+      return scheduleAfter(ctx, applyResponseCookies(ctx, response));
     } catch (error) {
       report(error);
       throw error;
