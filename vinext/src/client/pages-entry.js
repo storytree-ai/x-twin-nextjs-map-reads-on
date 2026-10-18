@@ -58,15 +58,16 @@ function Root() {
       done();
     }
   }, [s]);
-  // The server saw no fragment, and a static page only its route params:
-  // once hydrated, the router takes in the hash and the search params.
+  // The server saw no fragment, and a static page only its route params (so
+  // it is not ready yet): once hydrated, the router takes in the hash and
+  // the search params.
   useEffect(() => {
     const r = appState.router;
     const query =
       data.gsp && window.location.search
         ? queryFor(r.pathname, new URLSearchParams(window.location.search), r.query)
         : r.query;
-    if (query !== r.query || r.asPath !== currentAsPath()) {
+    if (!r.isReady || query !== r.query || r.asPath !== currentAsPath()) {
       setAppState({ ...appState, router: routerFor(r.pathname, query, currentAsPath()), onCommit: null });
     }
   }, []);
@@ -100,8 +101,8 @@ function onlyAHashChange(oldAs, newAs) {
   return oldHash !== newHash;
 }
 
-function routerFor(page, query, asPath) {
-  const snapshot = { pathname: page, route: page, query, asPath, isReady: true, isFallback: false };
+function routerFor(page, query, asPath, isReady = true) {
+  const snapshot = { pathname: page, route: page, query, asPath, isReady, isFallback: false };
   __setRouterState(snapshot);
   return createRouter(snapshot);
 }
@@ -162,6 +163,8 @@ async function navigate(method, rawHref, rawAs, options) {
   try {
     const sameRoute = shallow && new URL(href, window.location.href).pathname === window.location.pathname;
     if (sameRoute) {
+      // Out of any React lifecycle that called push(), so flushSync may run.
+      await Promise.resolve();
       query = queryFor(page, new URL(href, window.location.href).searchParams, appState.router.query);
     } else {
       const res = await fetch(dataUrl(href), { headers: { "x-nextjs-data": "1" } });
@@ -238,7 +241,12 @@ async function hydrate() {
   await flushPreloads();
   const asPath = currentAsPath();
   // The asPath the server rendered with: no fragment, and no query for a static page.
-  const router = routerFor(data.page, data.query || {}, data.gsp ? window.location.pathname : asPath.split("#")[0]);
+  const router = routerFor(
+    data.page,
+    data.query || {},
+    data.gsp ? window.location.pathname : asPath.split("#")[0],
+    !data.gsp,
+  );
   appState = { App: appMod?.default || null, Component, pageProps: data.props.pageProps, router };
   window.history.replaceState({ __N: true, url: asPath, as: asPath, options: {} }, "", asPath);
   __setNavigate(navigate);

@@ -176,7 +176,8 @@ async function renderDocument({ Document, appHtml, headHTML, scripts }) {
  * Render a page to a full HTML document.
  */
 async function renderPageHtml({ App, Document, Component, pageProps, page, query, asPath, opts, extraData }) {
-  const router = createRouter({ pathname: page, route: page, query, asPath, isReady: true });
+  // A static page knows only its route params until the client has the URL's query.
+  const router = createRouter({ pathname: page, route: page, query, asPath, isReady: !extraData?.gsp });
   const ctx = createUnifiedRequestContext();
   const headElements = ctx.ssrHeadChildren;
   const headManager = { add: (els) => headElements.push(...els) };
