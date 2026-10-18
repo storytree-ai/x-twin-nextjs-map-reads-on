@@ -88,14 +88,37 @@ function serveStatic(dirs, req, res) {
   return false;
 }
 
+/** The built Pages Router server and its client entry URL, or null. */
+async function loadPagesServer(root) {
+  const serverEntry = path.join(root, "dist", "server", "index.js");
+  const manifestFile = path.join(root, "dist", "client", ".vite", "manifest.json");
+  if (!fs.existsSync(serverEntry) || !fs.existsSync(manifestFile)) return null;
+  const viteManifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+  const entry = Object.values(viteManifest).find((c) => c.isEntry && c.name === "vinext-client");
+  if (!entry) return null;
+  const mod = await import(pathToFileURL(serverEntry).href);
+  return { ...mod, clientEntryUrl: "/" + entry.file };
+}
+
 async function startApp(opts, root, rscEntry) {
   const { toWebRequest, writeWebResponse } = await import("./server/app-router/index.js");
-  const handler = (await import(pathToFileURL(rscEntry).href)).default;
+  const rsc = await import(pathToFileURL(rscEntry).href);
+  const pages = await loadPagesServer(root);
   const staticDirs = [path.join(root, "dist", "client"), path.join(root, "public")].filter((d) => fs.existsSync(d));
   const server = http.createServer(async (req, res) => {
     if (serveStatic(staticDirs, req, res)) return;
     try {
-      await writeWebResponse(await handler(toWebRequest(req)), res);
+      const pathname = (req.url || "/").split("?")[0];
+      if (pages && (pathname.startsWith("/_next/data/") || (!rsc.hasRoute(pathname) && pages.hasPagesRoute(pathname.replace(/\.rsc$/, ""))))) {
+        if (pathname.endsWith(".rsc")) {
+          res.setHeader("x-vinext-reload", "1");
+          res.end();
+        } else {
+          await pages.handlePagesRequest(req, res, { dev: false, buildId: "production", clientEntryUrl: pages.clientEntryUrl });
+        }
+        return;
+      }
+      await writeWebResponse(await rsc.default(toWebRequest(req)), res);
     } catch (err) {
       console.error(err);
       if (!res.headersSent) res.statusCode = 500;

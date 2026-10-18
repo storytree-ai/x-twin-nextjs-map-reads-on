@@ -16,6 +16,7 @@ export const APP_RSC_ENTRY = path.join(distDir, "server", "app-router", "rsc-ent
 export const APP_SSR_ENTRY = path.join(distDir, "server", "app-router", "ssr-entry.js");
 export const APP_CLIENT_ENTRY = path.join(distDir, "client", "app-entry.js");
 
+const PAGES_ENV = "vinext_pages";
 const APP_MANIFEST_ID = "virtual:vinext-app-manifest";
 const RESOLVED_APP_MANIFEST_ID = "\0" + APP_MANIFEST_ID;
 const REACT_SERVER_REDIRECTS = new Map(
@@ -168,7 +169,26 @@ export default function vinext(options = {}) {
                 },
               },
             }
-          : {};
+          : env.command === "build" && pagesDir
+            ? {
+                // App Router build (@vitejs/plugin-rsc) plus the Pages Router: its
+                // client entry joins the client build, its server gets an environment.
+                environments: {
+                  client: {
+                    build: { manifest: true, rollupOptions: { input: { "vinext-client": CLIENT_ENTRY } } },
+                  },
+                  [PAGES_ENV]: {
+                    consumer: "server",
+                    resolve: { noExternal: ["vinext"] },
+                    build: {
+                      outDir: path.join(root, "dist", "server"),
+                      copyPublicDir: false,
+                      rollupOptions: { input: { index: PAGES_SERVER_ENTRY } },
+                    },
+                  },
+                },
+              }
+            : {};
       return {
         appType: "custom",
         resolve: {
@@ -186,6 +206,13 @@ export default function vinext(options = {}) {
         ssr: { noExternal: ["vinext"] },
         ...build,
       };
+    },
+
+    buildApp: {
+      order: "post",
+      async handler(builder) {
+        if (appDir && pagesDir && builder.environments[PAGES_ENV]) await builder.build(builder.environments[PAGES_ENV]);
+      },
     },
 
     resolveId(id) {

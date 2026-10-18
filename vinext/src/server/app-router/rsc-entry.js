@@ -165,17 +165,21 @@ async function routeTree(match, url) {
   return buildTree(route.levels, params, withHead(head, leaf), { pathname: url.pathname });
 }
 
-/** The tree rendering the nearest notFound/forbidden/unauthorized boundary inside the route's layouts. */
-async function fallbackTree(match, url, status) {
+/**
+ * The tree rendering the nearest notFound/forbidden/unauthorized boundary
+ * above level `below` inside the route's layouts, and that boundary's level.
+ */
+async function fallbackTree(match, url, status, below) {
   const { route, params } = match;
   const key = HTTP_FALLBACK_FILE[status];
-  let level = route.levels.length - 1;
+  let level = Math.min(below - 1, route.levels.length - 1);
   while (level > 0 && !route.levels[level][key]) level--;
   const file = route.levels[level][key];
   const mod = await load(file);
   const element = mod ? createElement(mod.default) : defaultFallback(status);
   const head = await headElements(route.levels, level, null, params, url.searchParams);
-  return buildTree(route.levels, params, null, { fallback: { level, element: withHead(head, element) }, pathname: url.pathname });
+  const tree = await buildTree(route.levels, params, null, { fallback: { level, element: withHead(head, element) }, pathname: url.pathname });
+  return { tree, level };
 }
 
 function payloadFor(tree, url, params) {
@@ -213,39 +217,49 @@ function redirectResponse(info, isRsc) {
   return new Response(null, { status: info.status, headers: { Location: info.url } });
 }
 
+/**
+ * Render a page. notFound()/forbidden()/unauthorized() thrown outside any
+ * Suspense boundary re-renders with the nearest fallback boundary; if a
+ * layout keeps throwing, each retry moves the boundary above it.
+ */
 async function renderPage(url, isRsc, match) {
-  let tree;
-  let status = 200;
-  try {
-    tree = match ? await routeTree(match, url) : await notFoundTree(url.pathname);
-    if (!match) status = 404;
-  } catch (error) {
-    // notFound()/redirect() thrown while loading modules or metadata.
-    const redirect = redirectInfo(error);
-    if (redirect) return redirectResponse(redirect, isRsc);
-    const fallbackStatus = httpFallbackStatus(error);
-    if (fallbackStatus === null || !match) throw error;
-    tree = await fallbackTree(match, url, fallbackStatus);
-    status = fallbackStatus;
-  }
   const params = match ? match.params : {};
-  const errors = [];
-  const stream = renderToReadableStream(payloadFor(tree, url, params), rscOptions(errors));
-  if (isRsc) return rscResponse(stream, status);
-
-  const ssr = await import.meta.viteRsc.loadModule("ssr", "index");
-  try {
-    const html = await ssr.renderHtml(stream);
-    return htmlResponse(html, status);
-  } catch (error) {
-    const redirect = redirectInfo(error);
-    if (redirect) return redirectResponse(redirect, false);
-    const fallbackStatus = httpFallbackStatus(error);
-    if (fallbackStatus === null) throw error;
-    const fallback = match ? await fallbackTree(match, url, fallbackStatus) : await notFoundTree(url.pathname);
-    const html = await ssr.renderHtml(renderToReadableStream(payloadFor(fallback, url, params), rscOptions([])));
-    return htmlResponse(html, fallbackStatus);
+  let fallbackStatus = null;
+  let below = Infinity;
+  for (;;) {
+    let status = match ? 200 : 404;
+    try {
+      let tree;
+      if (fallbackStatus === null) {
+        tree = match ? await routeTree(match, url) : await notFoundTree(url.pathname);
+      } else {
+        const fallback = await fallbackTree(match, url, fallbackStatus, below);
+        tree = fallback.tree;
+        below = fallback.level;
+        status = fallbackStatus;
+      }
+      const stream = renderToReadableStream(payloadFor(tree, url, params), rscOptions([]));
+      if (isRsc) return rscResponse(stream, status);
+      const ssr = await import.meta.viteRsc.loadModule("ssr", "index");
+      return htmlResponse(await ssr.renderHtml(stream), status);
+    } catch (error) {
+      const redirect = redirectInfo(error);
+      if (redirect) return redirectResponse(redirect, isRsc);
+      const thrownStatus = httpFallbackStatus(error);
+      if (thrownStatus === null) throw error;
+      // No layout left to render the fallback inside (the root layout threw).
+      if (!match || (fallbackStatus !== null && below <= 0)) return bareFallbackResponse(thrownStatus);
+      fallbackStatus = thrownStatus;
+    }
   }
+}
+
+function bareFallbackResponse(status) {
+  const text = status === 404 ? "This page could not be found." : status === 403 ? "Forbidden" : "Unauthorized";
+  return new Response(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${status}</title></head><body><h1>${status}</h1><p>${text}</p></body></html>`, {
+    status,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
 }
 
 function htmlResponse(stream, status) {
