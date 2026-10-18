@@ -2,7 +2,7 @@
  * Browser entry for the Pages Router: hydrates the server-rendered page and
  * runs client navigation (data from /_next/data/<buildId>/<path>.json).
  */
-import { createElement, useLayoutEffect, useSyncExternalStore } from "react";
+import { createElement, useEffect, useLayoutEffect, useSyncExternalStore } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import * as manifest from "virtual:vinext-pages-manifest";
@@ -58,6 +58,15 @@ function Root() {
       done();
     }
   }, [s]);
+  // A static page was rendered with its route params only; once hydrated,
+  // its router query takes in the address bar's search params (Next.js does too).
+  useEffect(() => {
+    if (data.gsp && window.location.search) {
+      const r = appState.router;
+      const query = queryFor(r.pathname, new URLSearchParams(window.location.search), r.query);
+      setAppState({ ...appState, router: routerFor(r.pathname, query, r.asPath), onCommit: null });
+    }
+  }, []);
   return createAppElement({ App: s.App, Component: s.Component, pageProps: s.pageProps, router: s.router });
 }
 

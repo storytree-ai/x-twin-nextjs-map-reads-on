@@ -291,7 +291,9 @@ export async function handlePagesRequest(req, res, opts) {
 
   const { route, params } = match;
   const mod = await manifest.loaders[route.file]();
-  const query = { ...searchParamsToQuery(url.searchParams), ...params };
+  const isStatic = !route.isApi && !mod.getServerSideProps && !!mod.getStaticProps;
+  // A static page's HTML (and ISR entry) is one per path: only route params.
+  const query = isStatic ? { ...params } : { ...searchParamsToQuery(url.searchParams), ...params };
 
   if (route.isApi) {
     await handleApiRoute(mod, req, res, query);
@@ -307,8 +309,6 @@ export async function handlePagesRequest(req, res, opts) {
   if (mod.getServerSideProps) dataFlags.gssp = true;
   else if (mod.getStaticProps) dataFlags.gsp = true;
   else if (Component.getInitialProps) dataFlags.gip = true;
-
-  const isStatic = !mod.getServerSideProps && !!mod.getStaticProps;
 
   /** Data fetching plus, for HTML (or the ISR cache), the document: { result, html }. */
   const generate = async ({ background = false } = {}) => {

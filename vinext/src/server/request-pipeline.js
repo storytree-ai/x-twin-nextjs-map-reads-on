@@ -109,19 +109,28 @@ function conditionValue(cond, request) {
   }
 }
 
-function conditionHolds(cond, request) {
+/**
+ * Whether a has/missing condition holds; a `has` adds what it matched to
+ * params (a key-only condition under its key, a value's named groups).
+ */
+function conditionHolds(cond, request, params = null) {
   const value = conditionValue(cond, request);
   if (value === undefined) return false;
   const expected = cond.type === "host" ? cond.value ?? cond.key : cond.value;
-  if (expected === undefined) return true;
-  return new RegExp(`^(?:${expected})$`).test(value);
+  if (expected === undefined) {
+    if (params && cond.type !== "host") params[cond.key] = value;
+    return true;
+  }
+  const m = new RegExp(`^(?:${expected})$`).exec(value);
+  if (m && params && m.groups) Object.assign(params, m.groups);
+  return m !== null;
 }
 
 /** Params when the rule's source and has/missing conditions match the request, else null. */
 export function matchRule(rule, request, pathname = request.url.pathname) {
   const params = compileSource(rule.source).match(pathname);
   if (!params) return null;
-  if (rule.has && !rule.has.every((c) => conditionHolds(c, request))) return null;
+  if (rule.has && !rule.has.every((c) => conditionHolds(c, request, params))) return null;
   if (rule.missing && rule.missing.some((c) => conditionHolds(c, request))) return null;
   return params;
 }
@@ -171,11 +180,24 @@ export function collectHeaders(rules, request) {
   return out;
 }
 
-/** The URL the first matching rewrite points at, else null. */
+/**
+ * The URL the first matching rewrite points at, else null. Source params
+ * the destination does not use are passed on as query, as Next.js does.
+ */
 export function findRewrite(rules, request, pathname = request.url.pathname) {
   for (const rule of rules || []) {
     const params = matchRule(rule, request, pathname);
-    if (params) return destinationUrl(rule.destination, params, request);
+    if (!params) continue;
+    const target = destinationUrl(rule.destination, params, request);
+    if (target.origin === request.url.origin) {
+      const used = new Set([...rule.destination.matchAll(/:([A-Za-z0-9_]+)/g)].map((m) => m[1]));
+      for (const [key, value] of Object.entries(params)) {
+        if (!used.has(key) && value !== undefined && !/^\d+$/.test(key) && !target.searchParams.has(key)) {
+          target.searchParams.set(key, value);
+        }
+      }
+    }
+    return target;
   }
   return null;
 }

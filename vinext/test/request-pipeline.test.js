@@ -80,3 +80,11 @@ test("middleware matchers: strings, objects with has/missing, and the default", 
   assert.equal(matchesMiddleware(undefined, req("/anything")), true);
   assert.equal(matchesMiddleware({ matcher: "/about/:path*" }, req("/about/x")), true);
 });
+
+test("has values become params, and rewrites pass unused params as query", () => {
+  const rule = { source: "/team", has: [{ type: "query", key: "slug" }, { type: "header", key: "x-region", value: "(?<region>eu|us)" }], destination: "/teams/:slug/:region" };
+  assert.deepEqual(matchRule(rule, req("/team?slug=a", { "x-region": "eu" })), { slug: "a", region: "eu" });
+  const out = findRewrite([{ source: "/p/:id/:extra", destination: "/post/:id" }], req("/p/1/more"));
+  assert.equal(out.pathname, "/post/1");
+  assert.equal(out.searchParams.get("extra"), "more");
+});
