@@ -3,7 +3,7 @@
  * in the browser: it renders the current RSC payload's tree under the
  * next/navigation contexts, and navigates by fetching RSC payloads.
  */
-import { createElement, startTransition, use, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createElement, startTransition, use, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   AppRouterContext,
   PathnameContext,
@@ -24,6 +24,14 @@ function fulfilled(value) {
 
 let navigateImpl = null;
 let commitImpl = null;
+// The URL a request from this page goes out from (x-vinext-url): the one
+// shown, or for an intercepted page the one it was intercepted from.
+let source = null;
+
+/** The URL requests from the current page are sent from, for intercepting routes. */
+export function requestSource() {
+  return source;
+}
 
 /** Navigate the client router; settles once the navigation has committed or been dropped. */
 export function navigate(href, options) {
@@ -67,12 +75,10 @@ export function AppRoot({ initialPayload, fetchPayload }) {
   const payload = use(state.payload);
   const pathname = state.shallow ? state.shallow.pathname : payload.pathname;
   const search = state.shallow ? state.shallow.search : payload.search || "";
-  // The URL the router shows, sent with a navigation for intercepting routes.
-  const shown = useRef(pathname + search);
 
   useIsomorphicLayoutEffect(() => {
-    shown.current = pathname + search;
-  }, [pathname, search]);
+    source = payload.interceptedFrom ?? pathname + search;
+  }, [payload, pathname, search]);
 
   useEffect(() => {
     if (!fetchPayload) return;
@@ -97,7 +103,7 @@ export function AppRoot({ initialPayload, fetchPayload }) {
       const id = ++latest;
       let result;
       try {
-        result = await fetchPayload(rscUrl(url.href), { from: shown.current });
+        result = await fetchPayload(rscUrl(url.href), { from: source });
       } catch (err) {
         console.error(err);
         window.location.assign(url.href);

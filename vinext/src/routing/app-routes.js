@@ -178,35 +178,38 @@ export function buildAppRoutes(files) {
     return levels;
   };
 
-  // A slot's content for the URL parts below its layout: the slot's page for
-  // the same parts (under the slot's own layouts), else its default.tsx.
-  const slotContent = (slotDir, rest) => {
+  // A slot's pages (each with its URL segments below the slot's layout and
+  // its levels from the slot down) and its default.tsx, matched per request.
+  const slotOf = (slotDir) => {
     const prefix = slotDir + "/";
+    const slotLevel = () => levelFor(slotDir, slotDir.split("/").pop());
+    const pages = [];
     for (const leaf of leaves) {
       if (leaf.type !== "page") continue;
       if (leaf.dir !== slotDir && !leaf.dir.startsWith(prefix)) continue;
       const below = leaf.dir === slotDir ? [] : leaf.dir.slice(prefix.length).split("/");
       if (below.some((s) => isSlot(s) || isIntercept(s) || isPrivate(s))) continue;
       const parts = urlPartsOf(below);
-      if (parts.length === rest.length && parts.every((p, i) => p === rest[i])) {
-        return { file: leaf.file, levels: [levelFor(slotDir, slotDir.split("/").pop()), ...levelsBelow(slotDir, below)] };
-      }
+      pages.push({ pattern: "/" + parts.join("/"), segments: parts.map(parseSegment), file: leaf.file, levels: [slotLevel(), ...levelsBelow(slotDir, below)] });
     }
+    pages.sort(compareRoutes);
     const fallback = dirs.get(slotDir)?.default;
-    return fallback ? { file: fallback, levels: [levelFor(slotDir, slotDir.split("/").pop())] } : null;
+    if (!pages.length && !fallback) return null;
+    return { pages, default: fallback ? { file: fallback, levels: [slotLevel()] } : null };
   };
 
-  // The levels from the root to the end of `fsSegments`, each with its slots
-  // for the URL `urlParts` (which may run past `fsSegments`, for a slot's page).
-  const chain = (fsSegments, urlParts) => {
+  // The levels from the root to the end of `fsSegments`, each with the URL
+  // parts it has consumed and its slots.
+  const chain = (fsSegments) => {
     const levels = [levelFor("", ""), ...levelsBelow("", fsSegments)];
-    let consumed = 0;
+    let depth = 0;
     levels.forEach((level, i) => {
-      if (i > 0 && !isGroup(level.segment)) consumed++;
+      if (i > 0 && !isGroup(level.segment)) depth++;
+      level.urlDepth = depth;
       level.slots = {};
       for (const name of slotNamesOf(level.dir)) {
-        const content = slotContent(childDir(level.dir, "@" + name), urlParts.slice(consumed));
-        if (content) level.slots[name] = content;
+        const slot = slotOf(childDir(level.dir, "@" + name));
+        if (slot) level.slots[name] = slot;
       }
     });
     return levels;
@@ -218,7 +221,7 @@ export function buildAppRoutes(files) {
       type,
       file,
       segments: urlSegments,
-      levels: chain(fsSegments, urlParts),
+      levels: chain(fsSegments),
       isDynamic: urlSegments.some((s) => s.value === undefined),
     });
   };
@@ -241,11 +244,13 @@ export function buildAppRoutes(files) {
     addRoute(leaf.type, leaf.file, fsSegments, urlPartsOf(fsSegments));
   }
   // A page only under a slot makes its URL a route, the slot parent's
-  // default.tsx rendering as children.
+  // default.tsx rendering as children, unless a page of the app answers it.
+  const pageRoutes = routes.slice();
   for (const { parent, urlParts } of slotOnly) {
     const pattern = "/" + urlParts.join("/");
     const fallback = dirs.get(parent.join("/"))?.default;
     if (!fallback || routes.some((r) => r.pattern === pattern)) continue;
+    if (urlParts.every((p) => parseSegment(p).value !== undefined) && matchAppRoute(pageRoutes.sort(compareRoutes), pattern)) continue;
     addRoute("page", fallback, parent, urlParts);
   }
   for (const entry of intercepts) {
@@ -289,6 +294,18 @@ function interceptOf(leaf, fsSegments, k) {
     slot: j >= 0 ? fsSegments[j].slice(1) : "children",
     below: fsSegments.slice(ownerEnd),
   };
+}
+
+/**
+ * What a slot renders for the URL parts below its layout: its first page
+ * matching them (with the params they bind), else its default.tsx, else null.
+ */
+export function selectSlot(slot, rest) {
+  for (const page of slot.pages) {
+    const params = matchSegments(page.segments, rest);
+    if (params) return { file: page.file, levels: page.levels, params };
+  }
+  return slot.default ? { ...slot.default, params: {} } : null;
 }
 
 /**

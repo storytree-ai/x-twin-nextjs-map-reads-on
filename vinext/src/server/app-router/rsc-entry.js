@@ -15,7 +15,7 @@ import {
 } from "@vitejs/plugin-rsc/rsc";
 import { routes, root, intercepts, loaders, loadMiddleware as middlewareLoader, loadInstrumentation } from "virtual:vinext-app-manifest";
 import serverConfig from "virtual:vinext-server-config";
-import { matchAppRoute, matchIntercept, nextErrorBoundary } from "../../routing/app-routes.js";
+import { matchAppRoute, matchIntercept, nextErrorBoundary, selectSlot } from "../../routing/app-routes.js";
 import { ErrorBoundary, HttpFallbackBoundary, RedirectBoundary, LayoutSegments } from "../../client/app-boundaries.js";
 import { httpFallbackStatus, redirectInfo, isNavigationError, notFound } from "../../shims/internal/navigation-errors.js";
 import { renderHead } from "./metadata.js";
@@ -111,7 +111,7 @@ function defaultFallback(status) {
  * intercepting page: { level, name, element }, "children" cutting the levels
  * below). A slot's own levels are built the same way, `nested`.
  */
-async function buildTree(levels, params, leaf, { fallback, pathname, caught, searchParams, slot, nested = false } = {}) {
+async function buildTree(levels, params, leaf, { fallback, pathname, caught, searchParams, slot, slotPathname, nested = false } = {}) {
   const cut = slot?.name === "children" ? slot.level : levels.length - 1;
   const last = fallback ? Math.min(fallback.level, cut) : cut;
   const mods = await Promise.all(
@@ -119,7 +119,7 @@ async function buildTree(levels, params, leaf, { fallback, pathname, caught, sea
       const [layout, template, error, loading, notFound, forbidden, unauthorized] = await Promise.all(
         [level.layout, level.template, level.error, level.loading, level.notFound, level.forbidden, level.unauthorized].map(load),
       );
-      const slots = layout ? await slotProps(level, i, params, { pathname, searchParams, slot }) : {};
+      const slots = layout ? await slotProps(level, i, params, { pathname, searchParams, slot, slotPathname }) : {};
       return { layout, template, error, loading, notFound, forbidden, unauthorized, slots };
     }),
   );
@@ -155,12 +155,18 @@ async function buildTree(levels, params, leaf, { fallback, pathname, caught, sea
   return node;
 }
 
-/** The elements for a layout's @slot props: each slot's page or default.tsx under the slot's levels. */
-async function slotProps(level, index, params, { pathname, searchParams, slot }) {
+/**
+ * The elements for a layout's @slot props: each slot's page for the URL
+ * (`slotPathname`, else `pathname`) below the layout, or its default.tsx,
+ * under the slot's levels.
+ */
+async function slotProps(level, index, params, { pathname, searchParams, slot, slotPathname }) {
   const out = {};
-  for (const [name, content] of Object.entries(level.slots || {})) {
+  const parts = (slotPathname ?? pathname ?? "/").split("/").filter(Boolean);
+  for (const [name, candidates] of Object.entries(level.slots || {})) {
     if (slot && slot.level === index && slot.name === name) continue;
-    out[name] = await slotTree(content, params, { pathname, searchParams });
+    const content = selectSlot(candidates, parts.slice(level.urlDepth));
+    if (content) out[name] = await slotTree(content, { ...params, ...content.params }, { pathname, searchParams });
   }
   if (slot && slot.level === index && slot.name !== "children") out[slot.name] = slot.element;
   return out;
@@ -220,8 +226,10 @@ function withHead(head, node) {
 async function routeTree(match, url, caught) {
   const { route, params, intercept } = match;
   // dynamicParams = false: params generateStaticParams did not return are not found.
-  if (route.isDynamic && !(await staticParamsAllow(await routeModules(route), params))) notFound();
-  const options = { pathname: url.pathname, searchParams: url.searchParams, caught };
+  if (intercept) {
+    if (intercept.intercept.segments.some((s) => s.value === undefined) && !(await staticParamsAllow(await interceptModules(intercept), intercept.params))) notFound();
+  } else if (route.isDynamic && !(await staticParamsAllow(await routeModules(route), params))) notFound();
+  const options = { pathname: url.pathname, searchParams: url.searchParams, caught, slotPathname: match.slotPathname };
   // A client navigation intercepted: the page the client is on, the
   // intercepting page in its slot of the intercepting layout.
   if (intercept) {
@@ -258,6 +266,7 @@ async function fallbackTree(match, url, status, below, caught) {
     fallback: { level, element: withHead(head, element) },
     pathname: url.pathname,
     searchParams: url.searchParams,
+    slotPathname: match.slotPathname,
     caught,
   });
   return { tree, level };
@@ -338,7 +347,7 @@ async function renderPage(url, isRsc, match, report, action = {}) {
       if (caught) status = caught.level === -1 ? 500 : status;
       tree = await withGlobalError(tree, caught);
       const stream = renderToReadableStream(
-        payloadFor(tree, url, params, action.payload),
+        payloadFor(tree, url, params, match?.intercept ? { ...action.payload, interceptedFrom: match.slotPathname } : action.payload),
         rscOptions(rscErrors, report, action.temporaryReferences, { quiet: reported }),
       );
       const config = status === 200 && match && !caught ? await segmentConfigOf(match.route) : null;
@@ -397,6 +406,12 @@ function htmlResponse(stream, status, cacheControl) {
 /** The route's layout modules (null where a level has none) and page module. */
 function routeModules(route) {
   return Promise.all([...route.levels.map((l) => load(l.layout)), load(route.file)]);
+}
+
+/** The layouts above an intercepting page (the owner's, then its own) and the page. */
+function interceptModules({ route, intercept, ownerIndex }) {
+  const levels = [...route.levels.slice(0, ownerIndex + 1), ...intercept.levels];
+  return Promise.all([...levels.map((l) => load(l.layout)), load(intercept.file)]);
 }
 
 /** The route's segment config, from its layouts and page. */
@@ -484,9 +499,11 @@ export default async function handler(request) {
   const pageUrl = new URL(url);
   pageUrl.pathname = pathname;
   let match = matchAppRoute(routes, pathname);
-  // A client navigation sends the URL it leaves (x-vinext-url), for intercepting routes.
-  const intercept = isRsc && request.method === "GET" ? matchIntercept(intercepts, routes, pathname, fromPathname(request)) : null;
-  if (intercept) match = { route: intercept.route, params: intercept.fromParams, intercept };
+  // A client navigation sends the URL it leaves (x-vinext-url), for intercepting
+  // routes; a refresh or server action on an intercepted page sends the URL it intercepted from.
+  const from = isRsc ? fromPathname(request) : null;
+  const intercept = from ? matchIntercept(intercepts, routes, pathname, from) : null;
+  if (intercept) match = { route: intercept.route, params: intercept.fromParams, intercept, slotPathname: from };
   if (match && (match.route.type === "route" || match.route.type === "metadata")) {
     if (isRsc) return new Response(null, { status: 200, headers: { "x-vinext-reload": "1" } });
     return match.route.type === "route" ? handleRoute(request, match) : handleMetadataRoute(request, match);

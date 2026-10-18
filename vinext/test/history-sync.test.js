@@ -46,3 +46,12 @@ test("the app's pushState and replaceState report the new URL; the router's own 
   history.pushState(null, "", "/after");
   assert.equal(seen.length, 3);
 });
+
+test("restoring leaves a wrapper installed after ours in place", () => {
+  const { history } = fakeHistory();
+  const sync = installHistorySync(history, () => {});
+  const theirs = function theirs() {};
+  history.pushState = theirs;
+  sync.restore();
+  assert.equal(history.pushState, theirs);
+});

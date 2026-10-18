@@ -45,15 +45,11 @@ export async function finalizeCacheControl(stream, config, isDynamic) {
   return { body, cacheControl: pageCacheControl(config, isDynamic()) };
 }
 
-/**
- * Whether `params` may render, given modules ordered root layout first,
- * page last: with dynamicParams = false (on any of them), only params
- * generateStaticParams returns do. Each generateStaticParams runs once for
- * every params set its parents generated, as in Next.js.
- */
-export async function staticParamsAllow(mods, params) {
-  if (resolveSegmentConfig(mods).dynamicParams !== false) return true;
-  let generated = [];
+// Generated params by the last module (the page), with the modules they came from.
+const generatedCache = new WeakMap();
+
+/** Every params set generateStaticParams makes over `mods`, each run once per parent params set. */
+async function generatedParams(mods) {
   let parents = [{}];
   for (const mod of mods) {
     if (typeof mod?.generateStaticParams !== "function") continue;
@@ -62,8 +58,37 @@ export async function staticParamsAllow(mods, params) {
       const list = (await mod.generateStaticParams({ params: parent })) || [];
       for (const entry of list) next.push({ ...parent, ...entry });
     }
-    generated = parents = next;
+    parents = next;
   }
-  const same = (a, b) => (Array.isArray(a) || Array.isArray(b) ? [].concat(a ?? []).map(String).join("/") === [].concat(b ?? []).map(String).join("/") : String(a) === String(b));
-  return generated.some((entry) => Object.keys(entry).every((key) => same(entry[key], params[key])));
+  return parents;
+}
+
+const sameParam = (a, b) =>
+  Array.isArray(a) || Array.isArray(b) ? [].concat(a ?? []).map(String).join("/") === [].concat(b ?? []).map(String).join("/") : a !== undefined && String(a) === String(b);
+
+/**
+ * Whether `params` may render, given modules ordered root layout first,
+ * page last: with dynamicParams = false (on any of them), only params
+ * generateStaticParams returns do, every param among them. Generated params
+ * are kept for the same modules, as Next.js generates them once at build.
+ */
+export async function staticParamsAllow(mods, params) {
+  if (resolveSegmentConfig(mods).dynamicParams !== false) return true;
+  const key = mods[mods.length - 1];
+  let cached = key && typeof key === "object" ? generatedCache.get(key) : undefined;
+  if (!cached || cached.mods.length !== mods.length || cached.mods.some((m, i) => m !== mods[i])) {
+    cached = { mods, list: generatedParams(mods) };
+    if (key && typeof key === "object") generatedCache.set(key, cached);
+  }
+  let list;
+  try {
+    list = await cached.list;
+  } catch (error) {
+    if (key && typeof key === "object" && generatedCache.get(key) === cached) generatedCache.delete(key);
+    throw error;
+  }
+  return list.some((entry) => {
+    const keys = new Set([...Object.keys(entry), ...Object.keys(params)]);
+    return [...keys].every((k) => sameParam(entry[k], params[k]));
+  });
 }

@@ -151,7 +151,10 @@ export function generateAppManifest(appDir, files, { middleware = null, instrume
     for (const key of ["layout", "template", "error", "loading", "notFound", "forbidden", "unauthorized", "globalError"]) {
       if (level[key]) used.add(level[key]);
     }
-    for (const slot of Object.values(level.slots || {})) collectSubtree(slot);
+    for (const slot of Object.values(level.slots || {})) {
+      slot.pages.forEach(collectSubtree);
+      if (slot.default) collectSubtree(slot.default);
+    }
   };
   const collectSubtree = ({ file, levels }) => {
     used.add(file);

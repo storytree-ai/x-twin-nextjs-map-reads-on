@@ -13,20 +13,23 @@ export function installHistorySync(history, onChange) {
     const next = new URL(String(url), base);
     onChange(next.pathname + next.search + next.hash);
   };
-  history.pushState = function pushState(state, title, url) {
+  const pushState = function pushState(state, title, url) {
     push.call(history, state, title, url);
     report(url);
   };
-  history.replaceState = function replaceState(state, title, url) {
+  const replaceState = function replaceState(state, title, url) {
     replace.call(history, state, title, url);
     report(url);
   };
+  history.pushState = pushState;
+  history.replaceState = replaceState;
   return {
     pushState: (state, url) => push.call(history, state, "", url),
     replaceState: (state, url) => replace.call(history, state, "", url),
+    // Put the originals back, unless something has wrapped ours since.
     restore() {
-      history.pushState = push;
-      history.replaceState = replace;
+      if (history.pushState === pushState) history.pushState = push;
+      if (history.replaceState === replaceState) history.replaceState = replace;
     },
   };
 }

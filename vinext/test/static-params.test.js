@@ -26,3 +26,20 @@ test("a child's generateStaticParams runs for each of its parent's params; catch
   assert.equal(await staticParamsAllow([layout, page], { lang: "fr", slug: ["en", "a"] }), false);
   assert.equal(await staticParamsAllow([layout, page], { lang: "de", slug: ["de", "a"] }), false);
 });
+
+test("under dynamicParams = false a segment nothing generates allows no value", async () => {
+  const layout = { dynamicParams: false, generateStaticParams: async () => [{ lang: "en" }] };
+  assert.equal(await staticParamsAllow([layout, {}], { lang: "en", slug: "anything" }), false);
+  assert.equal(await staticParamsAllow([layout, {}], { lang: "en" }), true);
+});
+
+test("generateStaticParams runs once for the same modules", async () => {
+  let calls = 0;
+  const page = { dynamicParams: false, generateStaticParams: async () => (calls++, [{ id: "1" }]) };
+  await staticParamsAllow([null, page], { id: "1" });
+  await staticParamsAllow([null, page], { id: "2" });
+  assert.equal(calls, 1);
+  // A new module (an edit) generates again.
+  await staticParamsAllow([null, { ...page }], { id: "1" });
+  assert.equal(calls, 2);
+});
