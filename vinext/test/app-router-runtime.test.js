@@ -79,3 +79,12 @@ test("the app manifest lists routes and a loader for every file they name", () =
   assert.match(src, /"not-found.tsx": \(\) => import/);
   assert.ok(!src.includes("counter.tsx"), "plain modules get no loader");
 });
+
+test("a request path starting with // stays a path on the request's host", async () => {
+  const { toWebRequest } = await import("../src/server/app-router/index.js");
+  const request = toWebRequest({ url: "//example.com/x?y=1", method: "GET", headers: { host: "localhost:3000" } });
+  const url = new URL(request.url);
+  assert.equal(url.host, "localhost:3000");
+  assert.equal(url.pathname, "//example.com/x");
+  assert.equal(url.search, "?y=1");
+});

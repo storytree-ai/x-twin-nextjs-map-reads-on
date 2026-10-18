@@ -8,7 +8,8 @@ import { Readable } from "node:stream";
 /** A web Request for a Node IncomingMessage. */
 export function toWebRequest(req) {
   const host = req.headers.host || "localhost";
-  const url = new URL(req.originalUrl || req.url || "/", `http://${host}`);
+  // Appended, not resolved: "//x/y" is a path here, not a protocol-relative URL.
+  const url = new URL(`http://${host}${req.originalUrl || req.url || "/"}`);
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (key.startsWith(":") || value === undefined) continue;
