@@ -4,7 +4,7 @@
  * through x-middleware-* headers, as Next.js does.
  */
 import { RequestCookies, ResponseCookies } from "./internal/cookies.js";
-import { getRequestContext, markDynamic } from "./internal/request-context.js";
+import { getRequestContext, markDynamic, queueAfter } from "./internal/request-context.js";
 
 export class NextURL extends URL {
   clone() {
@@ -105,16 +105,7 @@ export class NextResponse extends Response {
 
 /** Run `task` (a function or promise) after the response has been sent. */
 export function after(task) {
-  const ctx = getRequestContext();
-  if (ctx) {
-    ctx.afterTasks.push(task);
-    return;
-  }
-  setTimeout(() => {
-    Promise.resolve()
-      .then(() => (typeof task === "function" ? task() : task))
-      .catch((err) => console.error("[vinext] after() callback failed:", err));
-  }, 0);
+  queueAfter(getRequestContext(), task);
 }
 
 /** Wait for a real request: opts the render out of static caching. */

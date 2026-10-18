@@ -13,7 +13,7 @@ import { httpFallbackStatus, redirectInfo, isNavigationError } from "../../shims
 import { resolveMetadata, renderMetadata } from "./metadata.js";
 import { parseRscPath } from "../../shared/rsc-url.js";
 import { callRouteHandler } from "./route-handler.js";
-import { resolveSegmentConfig, pageCacheControl } from "./segment-config.js";
+import { resolveSegmentConfig, finalizeCacheControl } from "./segment-config.js";
 import {
   createRequestContext,
   runWithRequestContext,
@@ -248,12 +248,18 @@ async function renderPage(url, isRsc, match) {
         status = fallbackStatus;
       }
       const stream = renderToReadableStream(payloadFor(tree, url, params), rscOptions([]));
-      if (isRsc) return rscResponse(stream, status);
+      const config = status === 200 && match ? await segmentConfigOf(match.route) : null;
+      const isDynamic = () => Boolean(getRequestContext()?.dynamic);
+      if (isRsc) {
+        if (!config) return rscResponse(stream, status);
+        const { body, cacheControl } = await finalizeCacheControl(stream, config, isDynamic);
+        return rscResponse(body, status, cacheControl ? { "Cache-Control": cacheControl } : {});
+      }
       const ssr = await import.meta.viteRsc.loadModule("ssr", "index");
       const html = await ssr.renderHtml(stream);
-      // The shell has rendered, so the server components above any Suspense boundary have run.
-      const cacheControl = status === 200 && match ? pageCacheControl(await segmentConfigOf(match.route), getRequestContext()?.dynamic) : null;
-      return htmlResponse(html, status, cacheControl);
+      if (!config) return htmlResponse(html, status, null);
+      const { body, cacheControl } = await finalizeCacheControl(html, config, isDynamic);
+      return htmlResponse(body, status, cacheControl);
     } catch (error) {
       const redirect = redirectInfo(error);
       if (redirect) return redirectResponse(redirect, isRsc);

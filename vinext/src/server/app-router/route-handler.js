@@ -21,16 +21,39 @@ function thenable(value) {
   return Object.assign(Promise.resolve(value), value);
 }
 
-/** A NextRequest whose request-specific members mark the handler dynamic when read. */
+/**
+ * A NextRequest whose request-specific members mark the handler dynamic when
+ * read. Own accessors on the instance, not a Proxy: Request's private state
+ * must stay reachable for fetch(request) and new Request(request).
+ */
 function trackedRequest(request, ctx) {
   const nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
-  return new Proxy(nextRequest, {
-    get(target, prop) {
-      if (DYNAMIC_REQUEST_MEMBERS.has(prop)) ctx.dynamic = true;
-      const value = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
+  for (const name of DYNAMIC_REQUEST_MEMBERS) {
+    let proto = Object.getPrototypeOf(nextRequest);
+    let descriptor;
+    while (proto && !(descriptor = Object.getOwnPropertyDescriptor(proto, name))) proto = Object.getPrototypeOf(proto);
+    if (!descriptor) continue;
+    if (descriptor.get) {
+      Object.defineProperty(nextRequest, name, {
+        configurable: true,
+        get() {
+          ctx.dynamic = true;
+          return descriptor.get.call(nextRequest);
+        },
+      });
+    } else if (typeof descriptor.value === "function") {
+      const method = descriptor.value;
+      Object.defineProperty(nextRequest, name, {
+        configurable: true,
+        writable: true,
+        value(...args) {
+          ctx.dynamic = true;
+          return method.apply(nextRequest, args);
+        },
+      });
+    }
+  }
+  return nextRequest;
 }
 
 /** The Cache-Control a route module's segment config gives a fresh response, or null. */

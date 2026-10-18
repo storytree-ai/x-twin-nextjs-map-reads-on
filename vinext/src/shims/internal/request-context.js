@@ -60,6 +60,26 @@ export function applyResponseCookies(ctx, response) {
   return target;
 }
 
+/** Queue after() work: a function to call, or a promise to wait for (its rejection is handled now). */
+export function queueAfter(ctx, task) {
+  if (task && typeof task.then === "function") {
+    const settled = Promise.resolve(task);
+    settled.catch(() => {});
+    task = () => settled;
+  }
+  if (ctx) {
+    ctx.afterTasks.push(task);
+    return;
+  }
+  setTimeout(() => runAfterTask(task), 0);
+}
+
+function runAfterTask(task) {
+  Promise.resolve()
+    .then(() => (typeof task === "function" ? task() : undefined))
+    .catch((err) => console.error("[vinext] after() callback failed:", err));
+}
+
 /**
  * Run the request's after() work once `response`'s body has been read to the
  * end (or now, for a bodiless response). Returns the response to send.
@@ -69,13 +89,7 @@ export function scheduleAfter(ctx, response) {
   const run = () => {
     const tasks = ctx.afterTasks.splice(0);
     setTimeout(() => {
-      runWithRequestContext(ctx, () => {
-        for (const task of tasks) {
-          Promise.resolve()
-            .then(() => (typeof task === "function" ? task() : task))
-            .catch((err) => console.error("[vinext] after() callback failed:", err));
-        }
-      });
+      runWithRequestContext(ctx, () => tasks.forEach(runAfterTask));
     }, 0);
   };
   if (!response.body) {

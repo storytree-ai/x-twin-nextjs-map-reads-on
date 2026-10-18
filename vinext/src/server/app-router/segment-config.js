@@ -30,3 +30,15 @@ export function pageCacheControl(config, dynamic) {
   }
   return null;
 }
+
+/**
+ * The body and Cache-Control for a rendered page. A page that would be
+ * cacheable is rendered to the end first, so a dynamic API read late (inside
+ * a Suspense boundary) still turns it to no-store; others keep streaming.
+ */
+export async function finalizeCacheControl(stream, config, isDynamic) {
+  const early = pageCacheControl(config, isDynamic());
+  if (early === null || early === NO_STORE) return { body: stream, cacheControl: early };
+  const body = new Uint8Array(await new Response(stream).arrayBuffer());
+  return { body, cacheControl: pageCacheControl(config, isDynamic()) };
+}

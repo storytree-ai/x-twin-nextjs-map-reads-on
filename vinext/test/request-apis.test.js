@@ -202,3 +202,73 @@ test("page Cache-Control follows segment config and dynamic API use", async () =
   assert.equal(pageCacheControl(resolveSegmentConfig([{}, { revalidate: false }]), false), null);
   assert.equal(pageCacheControl(resolveSegmentConfig([{ revalidate: 0 }]), false).includes("no-store"), true);
 });
+
+test("a route handler's request can be forwarded and re-wrapped", async () => {
+  const forwarded = await callRouteHandler(
+    { async POST(request) { return Response.json({ body: await new Request(request).text() }); } },
+    req("/api/fwd", { method: "POST", body: "hi" }),
+    {},
+  );
+  assert.equal(forwarded.status, 200);
+  assert.deepEqual(await forwarded.json(), { body: "hi" });
+  const wrapped = await callRouteHandler(
+    { GET(request) { const w = new NextRequest(request); return Response.json({ path: w.nextUrl.pathname, ua: w.headers.get("user-agent") }); } },
+    req("/api/wrap", { headers: { "user-agent": "UA/2" } }),
+    {},
+  );
+  assert.equal(wrapped.status, 200);
+  assert.deepEqual(await wrapped.json(), { path: "/api/wrap", ua: "UA/2" });
+});
+
+test("a promise given to after() that rejects early never crashes the process", async () => {
+  const unhandled = [];
+  const onUnhandled = (e) => unhandled.push(e);
+  process.on("unhandledRejection", onUnhandled);
+  const origError = console.error;
+  console.error = () => {};
+  try {
+    const res = await callRouteHandler(
+      {
+        async GET() {
+          after(Promise.reject(new Error("rej")));
+          await new Promise((r) => setTimeout(r, 10));
+          return Response.json({ ok: true });
+        },
+      },
+      req(),
+      {},
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    await res.text();
+    await new Promise((r) => setTimeout(r, 20));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    console.error = origError;
+  }
+  assert.deepEqual(unhandled, []);
+});
+
+test("a cacheable page's Cache-Control waits for the whole render", async () => {
+  const { finalizeCacheControl } = await import("../src/server/app-router/segment-config.js");
+  const config = { revalidate: 60, dynamic: "auto" };
+  const ctx = { dynamic: false };
+  // A stream whose later chunk is rendered by a component that reads a dynamic API.
+  const stream = new ReadableStream({
+    async pull(controller) {
+      await new Promise((r) => setTimeout(r, 5));
+      if (!this.sent) {
+        this.sent = true;
+        controller.enqueue(new TextEncoder().encode("<p>shell</p>"));
+        return;
+      }
+      ctx.dynamic = true;
+      controller.enqueue(new TextEncoder().encode("<p>late</p>"));
+      controller.close();
+    },
+  });
+  const { body, cacheControl } = await finalizeCacheControl(stream, config, () => ctx.dynamic);
+  assert.match(cacheControl, /no-store/);
+  assert.equal(await new Response(body).text(), "<p>shell</p><p>late</p>");
+  const plain = await finalizeCacheControl(new Response("x").body, { revalidate: undefined, dynamic: "auto" }, () => false);
+  assert.equal(plain.cacheControl, null);
+});
