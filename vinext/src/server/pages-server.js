@@ -231,9 +231,11 @@ export function hasPagesRoute(pathname) {
  * Route a request through next.config and middleware to a page: the
  * filesystem is matched after beforeFiles rewrites (static pages first),
  * then afterFiles, then dynamic pages, then fallback rewrites. Returns
- * { url, match } or null once the pipeline has answered.
+ * { url, match } or null once the pipeline has answered. A request the App
+ * Router's pipeline has already `routed` is only matched.
  */
-async function routeRequest(req, res, { url, pathname, isData }) {
+async function routeRequest(req, res, { url, pathname, isData }, routed) {
+  if (routed) return { url: routed, match: matchPagesRoute(routes, routed.pathname) };
   let request = await runRequestPipeline(req, res, {
     pathname,
     search: url.search,
@@ -269,7 +271,8 @@ function isrSeconds(revalidate) {
 
 /**
  * Handle a Node request for the Pages Router. Returns false when no page
- * route matched and the caller may try something else.
+ * route matched and the caller may try something else. `opts.routed`: the
+ * URL the App Router's pipeline routed it to (req.url stays the browser's).
  */
 export async function handlePagesRequest(req, res, opts) {
   const parsed = parseRequest(req.url, opts.buildId);
@@ -281,7 +284,7 @@ export async function handlePagesRequest(req, res, opts) {
   const App = appMod?.default || null;
   const Document = documentMod?.default || null;
 
-  const routed = await routeRequest(req, res, parsed);
+  const routed = await routeRequest(req, res, parsed, opts.routed);
   if (!routed) return true;
   const { url, match } = routed;
   const pathname = url.pathname;

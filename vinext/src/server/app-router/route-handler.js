@@ -72,8 +72,11 @@ function allowedMethods(mod) {
   return [...allow].sort();
 }
 
-/** Call the route module's handler for the request. Always resolves to a Response. */
-export async function callRouteHandler(mod, request, params, { file = "route" } = {}) {
+/**
+ * Call the route module's handler for the request. Always resolves to a
+ * Response; `onError` hears an unhandled error (instrumentation's onRequestError).
+ */
+export async function callRouteHandler(mod, request, params, { file = "route", onError } = {}) {
   const method = request.method.toUpperCase();
   let handler = typeof mod[method] === "function" ? mod[method] : null;
   if (!handler && method === "HEAD" && typeof mod.GET === "function") handler = mod.GET;
@@ -97,6 +100,7 @@ export async function callRouteHandler(mod, request, params, { file = "route" } 
       else if (status !== null) response = new Response(null, { status });
       else {
         console.error(error);
+        if (onError) onError(error);
         response = new Response(null, { status: 500 });
       }
     }

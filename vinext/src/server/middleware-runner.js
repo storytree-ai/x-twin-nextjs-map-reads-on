@@ -48,7 +48,14 @@ function relativeTo(href, origin) {
   return url.origin === origin ? url.pathname + url.search + url.hash : url.href;
 }
 
-function sendRedirect(res, destination, status, isData) {
+function sendRedirect(res, destination, status, { isData = false, isRsc = false } = {}) {
+  if (isRsc) {
+    // The App Router's client navigates there itself.
+    res.statusCode = 200;
+    res.setHeader("x-vinext-redirect", destination);
+    res.end();
+    return;
+  }
   if (isData) {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -69,6 +76,18 @@ async function sendWebResponse(res, response, { decoded = false } = {}) {
   const body = response.body ? Buffer.from(await response.arrayBuffer()) : null;
   if (body) res.setHeader("Content-Length", body.length);
   res.end(body);
+}
+
+/** Add the cookies a middleware response sets to the request's cookie header. */
+function applyResponseCookiesToRequest(req, response, headers) {
+  const cookies = response.headers.getSetCookie().map((c) => c.split(";")[0].trim()).filter((c) => c.includes("="));
+  if (!cookies.length) return headers;
+  const existing = headers.get("cookie");
+  const cookie = [existing, ...cookies].filter(Boolean).join("; ");
+  const next = new Headers(headers);
+  next.set("cookie", cookie);
+  req.headers.cookie = cookie;
+  return next;
 }
 
 /** Replace the Node request's headers with middleware's `request.headers` override. */
@@ -98,12 +117,21 @@ async function proxy(res, req, target, headers) {
 }
 
 /**
- * Run headers, redirects, middleware and beforeFiles rewrites for a request
- * whose logical path is `pathname`. Returns { url, headers } (url possibly
- * rewritten, headers as middleware left them), or null once it has answered.
+ * Run the trailing-slash redirect, headers, redirects, middleware and
+ * beforeFiles rewrites for a request whose logical path is `pathname`.
+ * Returns { url, headers, status? } (url possibly rewritten, headers as
+ * middleware left them, status a middleware rewrite's), or null once it has
+ * answered. `isRsc` answers redirects for the App Router's client.
  */
-export async function runRequestPipeline(req, res, { pathname, search, isData, config, loadMiddleware }) {
+export async function runRequestPipeline(req, res, { pathname, search, isData, isRsc = false, config, loadMiddleware }) {
   const origin = `http://${req.headers.host || "localhost"}`;
+  const redirectAs = { isData, isRsc };
+  // trailingSlash: false. A path starting with "//" is left to 404: its
+  // redirect target would name another host.
+  if (!isData && !config.trailingSlash && pathname.length > 1 && pathname.endsWith("/") && !pathname.startsWith("//")) {
+    sendRedirect(res, pathname.replace(/\/+$/, "") + search, 308, redirectAs);
+    return null;
+  }
   // Set as parts: a path starting with "//" must not name another host.
   const url = new URL(origin);
   url.pathname = pathname;
@@ -114,7 +142,7 @@ export async function runRequestPipeline(req, res, { pathname, search, isData, c
 
   const redirect = findRedirect(config.redirects, request);
   if (redirect) {
-    sendRedirect(res, redirect.destination, redirect.status, isData);
+    sendRedirect(res, redirect.destination, redirect.status, redirectAs);
     return null;
   }
 
@@ -141,15 +169,15 @@ export async function runRequestPipeline(req, res, { pathname, search, isData, c
       if (!rewrite && !next) {
         if (location && response.status >= 300 && response.status < 400) {
           copyResponseHeaders(response.headers, res, { skipLength: true });
-          if (isData) res.removeHeader("location");
-          sendRedirect(res, relativeTo(location, origin), response.status, isData);
+          if (isData || isRsc) res.removeHeader("location");
+          sendRedirect(res, relativeTo(location, origin), response.status, redirectAs);
         } else {
           await sendWebResponse(res, response);
         }
         return null;
       }
       copyResponseHeaders(response.headers, res, { skipLength: true });
-      const headers = applyRequestOverride(req, response, request.headers);
+      const headers = applyResponseCookiesToRequest(req, response, applyRequestOverride(req, response, request.headers));
       request = { url: request.url, headers };
       if (rewrite) {
         const target = new URL(rewrite, request.url);
@@ -158,6 +186,7 @@ export async function runRequestPipeline(req, res, { pathname, search, isData, c
           return null;
         }
         request = { url: target, headers };
+        if (response.status !== 200) request.status = response.status;
       }
     }
   }
@@ -168,7 +197,7 @@ export async function runRequestPipeline(req, res, { pathname, search, isData, c
       await proxy(res, req, before, new Headers(request.headers));
       return null;
     }
-    request = { url: before, headers: request.headers };
+    request = { ...request, url: before };
   }
   return request;
 }
@@ -181,5 +210,5 @@ export async function applyRewrites(req, res, rules, request) {
     await proxy(res, req, target, new Headers(request.headers));
     return false;
   }
-  return { url: target, headers: request.headers };
+  return { ...request, url: target };
 }

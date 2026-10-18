@@ -35,6 +35,15 @@ function middleware(request) {
   if (pathname === "/redirect-first") return new Response("middleware should not win", { status: 418 });
   if (pathname === "/headers-first") return NextResponse.rewrite(new URL("/ssr", request.url));
   if (pathname === "/throw") throw new Error("boom");
+  if (pathname === "/mw-redirect") {
+    return NextResponse.redirect(new URL("/about", request.url), { headers: { "set-cookie": "mw-redirect=1; Path=/" } });
+  }
+  if (pathname === "/rewrite-status") return NextResponse.rewrite(new URL("/?from=mw", request.url), { status: 403 });
+  if (pathname === "/set-cookie") {
+    const res = NextResponse.next();
+    res.cookies.set("from-mw", "yes");
+    return res;
+  }
   if (pathname === "/gated") {
     const headers = new Headers(request.headers);
     headers.set("cookie", "mw=1");
@@ -46,13 +55,14 @@ function middleware(request) {
   return res;
 }
 
-const run = (pathname, reqHeaders = {}) => {
+const run = (pathname, reqHeaders = {}, { search = "", isRsc = false } = {}) => {
   const req = { method: "GET", headers: { host: "localhost:3000", ...reqHeaders } };
   const res = fakeRes();
   const out = runRequestPipeline(req, res, {
     pathname,
-    search: "",
+    search,
     isData: false,
+    isRsc,
     config,
     loadMiddleware: async () => ({ middleware, config: { matcher: "/((?!api).*)" } }),
   });
@@ -98,4 +108,39 @@ test("a path starting with // stays on the request's host", async () => {
   const { request } = await run("//evil.test/about");
   assert.equal(request.url.host, "localhost:3000");
   assert.equal(request.url.pathname, "//evil.test/about");
+});
+
+test("a trailing slash redirects (308) to the path without it, keeping the query", async () => {
+  const { request, res } = await run("/about/", {}, { search: "?foo=bar" });
+  assert.equal(request, null);
+  assert.equal(res.statusCode, 308);
+  assert.equal(res.headers.location, "/about?foo=bar");
+  assert.notEqual((await run("/")).request, null);
+  assert.notEqual((await run("//example.com/")).request, null);
+});
+
+test("an RSC request's redirects reach the client router as x-vinext-redirect", async () => {
+  const config = await run("/redirect-first", {}, { isRsc: true });
+  assert.equal(config.request, null);
+  assert.equal(config.res.statusCode, 200);
+  assert.equal(config.res.headers["x-vinext-redirect"], "/about");
+  assert.equal(config.res.headers.location, undefined);
+  const mw = await run("/mw-redirect", {}, { isRsc: true });
+  assert.equal(mw.res.headers["x-vinext-redirect"], "/about");
+  assert.deepEqual(mw.res.headers["set-cookie"], ["mw-redirect=1; Path=/"]);
+});
+
+test("a middleware rewrite's status and query reach the routed request", async () => {
+  const { request } = await run("/rewrite-status");
+  assert.equal(request.url.pathname, "/");
+  assert.equal(request.url.searchParams.get("from"), "mw");
+  assert.equal(request.status, 403);
+  assert.equal((await run("/about")).request.status, undefined);
+});
+
+test("cookies middleware sets are in the request's cookies for rendering", async () => {
+  const { request, req, res } = await run("/set-cookie", { cookie: "a=1" });
+  assert.equal(req.headers.cookie, "a=1; from-mw=yes");
+  assert.equal(request.headers.get("cookie"), "a=1; from-mw=yes");
+  assert.match([].concat(res.headers["set-cookie"]).join(), /from-mw=yes/);
 });
