@@ -7,10 +7,12 @@ import path from "node:path";
 export const NEXT_SHIMS = {
   next: "next.js",
   "next/app": "app.js",
+  "next/cache": "cache.js",
   "next/compat/router": "compat-router.js",
   "next/config": "config.js",
   "next/document": "document.js",
   "next/dynamic": "dynamic.js",
+  "next/form": "form.js",
   "next/head": "head.js",
   "next/headers": "headers.js",
   "next/image": "image.js",

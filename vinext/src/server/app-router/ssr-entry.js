@@ -12,8 +12,9 @@ import { injectPayload } from "./inline-payload.js";
  * Render the RSC stream to HTML. Rejects when the shell fails (a server
  * component threw outside any Suspense boundary), with the thrown error,
  * whose `digest` tells notFound()/redirect() apart from failures.
+ * `formState` is a server action's useActionState state after a form post.
  */
-export async function renderHtml(rscStream, { nonce } = {}) {
+export async function renderHtml(rscStream, { nonce, formState } = {}) {
   const [forSsr, forBrowser] = rscStream.tee();
   let payload;
   function SsrRoot() {
@@ -24,6 +25,7 @@ export async function renderHtml(rscStream, { nonce } = {}) {
   const htmlStream = await renderToReadableStream(createElement(SsrRoot), {
     bootstrapScriptContent,
     nonce,
+    formState,
     onError(error) {
       if (error && typeof error === "object" && typeof error.digest === "string") return error.digest;
       console.error(error);

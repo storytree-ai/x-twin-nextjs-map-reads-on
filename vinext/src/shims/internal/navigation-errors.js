@@ -27,11 +27,16 @@ export function unauthorized() {
 
 export const RedirectType = { push: "push", replace: "replace" };
 
-export function redirect(url, type = RedirectType.replace, status = 307) {
+// The request context's store, found without importing node:async_hooks (this
+// module is shared with the browser): redirect() in a server action pushes.
+const REQUEST_CONTEXT = Symbol.for("vinext.requestContext");
+
+export function redirect(url, type, status = 307) {
+  type ??= globalThis[REQUEST_CONTEXT]?.getStore()?.phase === "action" ? RedirectType.push : RedirectType.replace;
   throw controlError("NEXT_REDIRECT", `${REDIRECT_PREFIX}${type};${url};${status};`);
 }
 
-export function permanentRedirect(url, type = RedirectType.replace) {
+export function permanentRedirect(url, type) {
   redirect(url, type, 308);
 }
 

@@ -22,6 +22,19 @@ function fulfilled(value) {
 }
 
 let navigateImpl = null;
+let commitImpl = null;
+
+/** Navigate the client router; settles once the navigation has committed or been dropped. */
+export function navigate(href, options) {
+  if (navigateImpl) return navigateImpl(href, options);
+  window.location.assign(href);
+  return Promise.resolve();
+}
+
+/** Commit a payload rendered for the current URL (a server action's re-render). */
+export function commitPayload(payload) {
+  commitImpl?.(payload);
+}
 
 function createRouter() {
   const go = (href, options, mode) => {
@@ -92,12 +105,21 @@ export function AppRoot({ initialPayload, fetchPayload }) {
       });
     }
     navigateImpl = navigate;
+    const commit = (payload) => {
+      // Dropped if the router has since moved to another URL.
+      if (payload.pathname !== window.location.pathname || (payload.search || "") !== window.location.search) return;
+      startTransition(() => {
+        setState((prev) => ({ payload: fulfilled(payload), navId: prev.navId + 1, scroll: false }));
+      });
+    };
+    commitImpl = commit;
     window.history.replaceState({ __vinext: true, ...(window.history.state || {}) }, "", window.location.href);
     const onPopState = () => navigate(window.location.href, { mode: "pop" });
     window.addEventListener("popstate", onPopState);
     return () => {
       window.removeEventListener("popstate", onPopState);
       if (navigateImpl === navigate) navigateImpl = null;
+      if (commitImpl === commit) commitImpl = null;
     };
   }, [fetchPayload]);
 
