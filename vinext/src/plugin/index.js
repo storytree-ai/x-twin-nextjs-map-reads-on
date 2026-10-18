@@ -147,19 +147,27 @@ export function generatePagesManifest(pagesDir, files, { server, middleware = nu
  * per file it names, and loaders for middleware and instrumentation (or null).
  */
 export function generateAppManifest(appDir, files, { middleware = null, instrumentation = null } = {}) {
-  const { routes, root } = buildAppRoutes(files);
+  const { routes, root, intercepts } = buildAppRoutes(files);
   const used = new Set();
   const collect = (level) => {
     for (const key of ["layout", "template", "error", "loading", "notFound", "forbidden", "unauthorized", "globalError"]) {
       if (level[key]) used.add(level[key]);
     }
+    for (const slot of Object.values(level.slots || {})) {
+      slot.pages.forEach(collectSubtree);
+      if (slot.default) collectSubtree(slot.default);
+    }
+  };
+  const collectSubtree = ({ file, levels }) => {
+    used.add(file);
+    levels.forEach(collect);
   };
   collect(root);
   for (const route of routes) {
-    used.add(route.file);
-    route.levels.forEach(collect);
+    collectSubtree(route);
     for (const level of route.levels) for (const entry of level.metadataFiles) used.add(entry.file);
   }
+  intercepts.forEach(collectSubtree);
   const loader = (f) => {
     const full = path.join(appDir, f);
     return metadataFileOf(f)?.isStatic ? METADATA_FILE_PREFIX + full : full;
@@ -167,6 +175,7 @@ export function generateAppManifest(appDir, files, { middleware = null, instrume
   return [
     `export const routes = ${JSON.stringify(routes)};`,
     `export const root = ${JSON.stringify(root)};`,
+    `export const intercepts = ${JSON.stringify(intercepts)};`,
     `export const loaders = {`,
     ...[...used].sort().map((f) => `  ${JSON.stringify(f)}: () => import(${JSON.stringify(loader(f))}),`),
     `};`,

@@ -115,6 +115,21 @@ test("the app manifest lists routes and a loader for every file they name", () =
   assert.match(withGlobal, /"global-error.tsx": \(\) => import/);
 });
 
+test("the app manifest loads slot and intercepting pages with their layouts", () => {
+  const src = generateAppManifest("/app/app", [
+    "layout.tsx",
+    "feed/layout.tsx",
+    "feed/page.tsx",
+    "feed/@modal/layout.tsx",
+    "feed/@modal/default.tsx",
+    "feed/@modal/(...)photos/[id]/page.tsx",
+  ]);
+  assert.match(src, /export const intercepts = \[/);
+  assert.match(src, /"feed\/@modal\/layout.tsx": \(\) => import/);
+  assert.match(src, /"feed\/@modal\/default.tsx": \(\) => import/);
+  assert.match(src, /"feed\/@modal\/\(\.\.\.\)photos\/\[id\]\/page.tsx": \(\) => import/);
+});
+
 test("the app manifest loads metadata routes: modules as they are, static files through a virtual module", () => {
   const src = generateAppManifest("/app/app", ["layout.tsx", "page.tsx", "robots.ts", "icon.png", "about/page.tsx", "about/opengraph-image.tsx"]);
   assert.match(src, /"robots.ts": \(\) => import\("\/app\/app\/robots.ts"\)/);

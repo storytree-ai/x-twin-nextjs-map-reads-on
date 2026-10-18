@@ -13,18 +13,18 @@ import {
   decodeFormState,
   loadServerAction,
 } from "@vitejs/plugin-rsc/rsc";
-import { routes, root, loaders, loadMiddleware as middlewareLoader, loadInstrumentation } from "virtual:vinext-app-manifest";
+import { routes, root, intercepts, loaders, loadMiddleware as middlewareLoader, loadInstrumentation } from "virtual:vinext-app-manifest";
 import serverConfig from "virtual:vinext-server-config";
-import { matchAppRoute, nextErrorBoundary } from "../../routing/app-routes.js";
+import { matchAppRoute, matchIntercept, nextErrorBoundary, selectSlot } from "../../routing/app-routes.js";
 import { ErrorBoundary, HttpFallbackBoundary, RedirectBoundary, LayoutSegments } from "../../client/app-boundaries.js";
-import { httpFallbackStatus, redirectInfo, isNavigationError } from "../../shims/internal/navigation-errors.js";
+import { httpFallbackStatus, redirectInfo, isNavigationError, notFound } from "../../shims/internal/navigation-errors.js";
 import { renderHead } from "./metadata.js";
 import { metadataRouteResponse } from "./metadata-routes.js";
 import { parseRscPath } from "../../shared/rsc-url.js";
 import { callRouteHandler } from "./route-handler.js";
 import { createInstrumentation } from "../instrumentation.js";
 import { actionRequestKind, runServerAction, endActionPhase } from "./actions.js";
-import { resolveSegmentConfig, finalizeCacheControl, NO_STORE } from "./segment-config.js";
+import { resolveSegmentConfig, finalizeCacheControl, staticParamsAllow, NO_STORE } from "./segment-config.js";
 import { serveWithIsr } from "./isr-cache.js";
 import { installFetchCache } from "../../shims/internal/fetch-cache.js";
 import {
@@ -111,24 +111,29 @@ function defaultFallback(status) {
  * With `fallback` ({ level, element }), levels below `level` are dropped and
  * that level's children are the fallback element. With `caught`
  * ({ level, serverError }), that level's error boundary starts showing the error.
+ * Each layout also gets its @slots as props (`slots` overriding one with an
+ * intercepting page: { level, name, element }, "children" cutting the levels
+ * below). A slot's own levels are built the same way, `nested`.
  */
-async function buildTree(levels, params, leaf, { fallback, pathname, caught } = {}) {
-  const last = fallback ? fallback.level : levels.length - 1;
+async function buildTree(levels, params, leaf, { fallback, pathname, caught, searchParams, slot, slotPathname, nested = false } = {}) {
+  const cut = slot?.name === "children" ? slot.level : levels.length - 1;
+  const last = fallback ? Math.min(fallback.level, cut) : cut;
   const mods = await Promise.all(
-    levels.slice(0, last + 1).map(async (level) => {
+    levels.slice(0, last + 1).map(async (level, i) => {
       const [layout, template, error, loading, notFound, forbidden, unauthorized] = await Promise.all(
         [level.layout, level.template, level.error, level.loading, level.notFound, level.forbidden, level.unauthorized].map(load),
       );
-      return { layout, template, error, loading, notFound, forbidden, unauthorized };
+      const slots = layout ? await slotProps(level, i, params, { pathname, searchParams, slot, slotPathname }) : {};
+      return { layout, template, error, loading, notFound, forbidden, unauthorized, slots };
     }),
   );
-  let node = fallback ? fallback.element : leaf;
+  let node = fallback ? fallback.element : slot?.name === "children" ? slot.element : leaf;
   for (let i = last; i >= 0; i--) {
     const level = levels[i];
     const mod = mods[i];
     // The root level always has a boundary, with default fallbacks for missing files.
-    if (!fallback && (i === 0 || mod.notFound || mod.forbidden || mod.unauthorized)) {
-      const fallbackFor = (m, status) => (m ? createElement(m.default) : i === 0 ? defaultFallback(status) : undefined);
+    if (!fallback && ((i === 0 && !nested) || mod.notFound || mod.forbidden || mod.unauthorized)) {
+      const fallbackFor = (m, status) => (m ? createElement(m.default) : i === 0 && !nested ? defaultFallback(status) : undefined);
       node = createElement(HttpFallbackBoundary, {
         notFound: fallbackFor(mod.notFound, 404),
         forbidden: fallbackFor(mod.forbidden, 403),
@@ -146,12 +151,35 @@ async function buildTree(levels, params, leaf, { fallback, pathname, caught } = 
       const segments = fallback ? [] : segmentsBelow(levels, i, params);
       node = createElement(
         mod.layout.default,
-        { params: thenable(paramsUpTo(levels, i, params)) },
+        { ...mod.slots, params: thenable(paramsUpTo(levels, i, params)) },
         createElement(LayoutSegments, { segments }, node),
       );
     }
   }
   return node;
+}
+
+/**
+ * The elements for a layout's @slot props: each slot's page for the URL
+ * (`slotPathname`, else `pathname`) below the layout, or its default.tsx,
+ * under the slot's levels.
+ */
+async function slotProps(level, index, params, { pathname, searchParams, slot, slotPathname }) {
+  const out = {};
+  const parts = (slotPathname ?? pathname ?? "/").split("/").filter(Boolean);
+  for (const [name, candidates] of Object.entries(level.slots || {})) {
+    if (slot && slot.level === index && slot.name === name) continue;
+    const content = selectSlot(candidates, parts.slice(level.urlDepth));
+    if (content) out[name] = await slotTree(content, { ...params, ...content.params }, { pathname, searchParams });
+  }
+  if (slot && slot.level === index && slot.name !== "children") out[slot.name] = slot.element;
+  return out;
+}
+
+/** A slot's (or intercepting page's) tree: its page under its own layouts and boundaries. */
+async function slotTree(content, params, { pathname, searchParams }) {
+  const leaf = await pageElement(content, params, searchParams || new URLSearchParams());
+  return buildTree(content.levels, params, leaf, { pathname, searchParams, nested: true });
 }
 
 async function pageElement(route, params, searchParams) {
@@ -200,7 +228,21 @@ function withHead(head, node) {
 
 /** The tree for a matched route, with its metadata. */
 async function routeTree(match, url, caught) {
-  const { route, params } = match;
+  const { route, params, intercept } = match;
+  // dynamicParams = false: params generateStaticParams did not return are not found.
+  if (intercept) {
+    const { target } = intercept;
+    const dynamic = intercept.intercept.segments.some((s) => s.value === undefined);
+    if (dynamic && !(await staticParamsAllow(await interceptModules(intercept), intercept.params))) notFound();
+    if (target?.route.isDynamic && !(await staticParamsAllow(await routeModules(target.route), target.params))) notFound();
+  } else if (route.isDynamic && !(await staticParamsAllow(await routeModules(route), params))) notFound();
+  const options = { pathname: url.pathname, searchParams: url.searchParams, caught, slotPathname: match.slotPathname };
+  // A client navigation intercepted: the page the client is on, the
+  // intercepting page in its slot of the intercepting layout.
+  if (intercept) {
+    const element = await slotTree(intercept.intercept, intercept.params, options);
+    options.slot = { level: intercept.ownerIndex, name: intercept.intercept.slot, element };
+  }
   const leaf = await pageElement(route, params, url.searchParams);
   const leafMod = await load(route.file);
   let head;
@@ -209,9 +251,9 @@ async function routeTree(match, url, caught) {
   } catch (error) {
     // notFound()/redirect() from generateMetadata act as the page's own would.
     if (isNavigationError(error)) throw error;
-    return buildTree(route.levels, params, createElement(MetadataError, { error }), { pathname: url.pathname, caught });
+    return buildTree(route.levels, params, createElement(MetadataError, { error }), options);
   }
-  return buildTree(route.levels, params, withHead(head, leaf), { pathname: url.pathname, caught });
+  return buildTree(route.levels, params, withHead(head, leaf), options);
 }
 
 /**
@@ -227,7 +269,13 @@ async function fallbackTree(match, url, status, below, caught) {
   const mod = await load(file);
   const element = mod ? createElement(mod.default) : defaultFallback(status);
   const head = await headElements(route.levels, level, mod, params, url, { noindex: status === 404 });
-  const tree = await buildTree(route.levels, params, null, { fallback: { level, element: withHead(head, element) }, pathname: url.pathname, caught });
+  const tree = await buildTree(route.levels, params, null, {
+    fallback: { level, element: withHead(head, element) },
+    pathname: url.pathname,
+    searchParams: url.searchParams,
+    slotPathname: match.slotPathname,
+    caught,
+  });
   return { tree, level };
 }
 
@@ -262,7 +310,7 @@ function rscOptions(errors, report, temporaryReferences, { quiet = false } = {})
 function rscResponse(stream, status, headers = {}) {
   return new Response(stream, {
     status,
-    headers: { "Content-Type": "text/x-component; charset=utf-8", Vary: "Accept", ...headers },
+    headers: { "Content-Type": "text/x-component; charset=utf-8", Vary: "Accept, x-vinext-url", ...headers },
   });
 }
 
@@ -306,7 +354,7 @@ async function renderPage(url, isRsc, match, report, action = {}) {
       if (caught) status = caught.level === -1 ? 500 : status;
       tree = await withGlobalError(tree, caught);
       const stream = renderToReadableStream(
-        payloadFor(tree, url, params, action.payload),
+        payloadFor(tree, url, params, match?.intercept ? { ...action.payload, interceptedFrom: match.slotPathname } : action.payload),
         rscOptions(rscErrors, report, action.temporaryReferences, { quiet: reported }),
       );
       const config = status === 200 && match && !caught ? await segmentConfigOf(match.route) : null;
@@ -362,10 +410,20 @@ function htmlResponse(stream, status, cacheControl) {
   return new Response(stream, { status, headers });
 }
 
+/** The route's layout modules (null where a level has none) and page module. */
+function routeModules(route) {
+  return Promise.all([...route.levels.map((l) => load(l.layout)), load(route.file)]);
+}
+
+/** The layouts above an intercepting page (the owner's, then its own) and the page. */
+function interceptModules({ route, intercept, ownerIndex }) {
+  const levels = [...route.levels.slice(0, ownerIndex + 1), ...intercept.levels];
+  return Promise.all([...levels.map((l) => load(l.layout)), load(intercept.file)]);
+}
+
 /** The route's segment config, from its layouts and page. */
 async function segmentConfigOf(route) {
-  const mods = await Promise.all([...route.levels.map((l) => load(l.layout)), load(route.file)]);
-  return resolveSegmentConfig(mods);
+  return resolveSegmentConfig(await routeModules(route));
 }
 
 // ISR caches pages under vinext start; vinext dev renders every request, as Next.js does.
@@ -454,13 +512,25 @@ function reportRequestError(error, request, route, routeType) {
   instrumentation.report(error, request, route, routeType);
 }
 
+/** The pathname of the client's x-vinext-url header, or null. */
+function fromPathname(request) {
+  const value = request.headers.get("x-vinext-url");
+  if (!value || !value.startsWith("/") || value.startsWith("//")) return null;
+  return value.split(/[?#]/)[0];
+}
+
 /** The fetch handler: a Request in, a Response out. */
 export default async function handler(request) {
   const url = new URL(request.url);
   const { pathname, isRsc } = parseRscPath(url.pathname);
   const pageUrl = new URL(url);
   pageUrl.pathname = pathname;
-  const match = matchAppRoute(routes, pathname);
+  let match = matchAppRoute(routes, pathname);
+  // A client navigation sends the URL it leaves (x-vinext-url), for intercepting
+  // routes; a refresh or server action on an intercepted page sends the URL it intercepted from.
+  const from = isRsc ? fromPathname(request) : null;
+  const intercept = from ? matchIntercept(intercepts, routes, pathname, from) : null;
+  if (intercept) match = { route: intercept.route, params: intercept.fromParams, intercept, slotPathname: from };
   if (match && (match.route.type === "route" || match.route.type === "metadata")) {
     if (isRsc) return new Response(null, { status: 200, headers: { "x-vinext-reload": "1" } });
     return match.route.type === "route" ? handleRoute(request, match) : handleMetadataRoute(request, match);

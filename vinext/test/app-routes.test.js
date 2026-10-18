@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildAppRoutes, matchAppRoute, nextErrorBoundary } from "../src/routing/app-routes.js";
+import { buildAppRoutes, matchAppRoute, matchIntercept, nextErrorBoundary, selectSlot } from "../src/routing/app-routes.js";
 
 const files = [
   "layout.tsx",
@@ -130,4 +130,104 @@ test("a render error goes to the nearest error.tsx above where it was thrown, th
   // The root layout threw under global-error, or there is no global-error.
   assert.equal(nextErrorBoundary(levels, -1, hasGlobal), null);
   assert.equal(nextErrorBoundary(levels, 1, false), null);
+});
+
+const slotFiles = [
+  "layout.tsx",
+  "page.tsx",
+  "dashboard/layout.tsx",
+  "dashboard/page.tsx",
+  "dashboard/default.tsx",
+  "dashboard/settings/page.tsx",
+  "dashboard/@team/layout.tsx",
+  "dashboard/@team/page.tsx",
+  "dashboard/@team/default.tsx",
+  "dashboard/@team/members/page.tsx",
+  "dashboard/@analytics/page.tsx",
+  "dashboard/@analytics/default.tsx",
+  "feed/layout.tsx",
+  "feed/page.tsx",
+  "feed/@modal/default.tsx",
+  "feed/@modal/(...)photos/[id]/page.tsx",
+  "photos/[id]/page.tsx",
+  "shop/(group)/items/page.tsx",
+  "shop/(group)/items/(.)detail/[id]/page.tsx",
+  "shop/(group)/items/(..)cart/page.tsx",
+];
+
+const slotAt = (route, index, name, pathname) => {
+  const level = route.levels[index];
+  return selectSlot(level.slots[name], pathname.split("/").filter(Boolean).slice(level.urlDepth));
+};
+
+test("a layout's slots render the slot's page for the same URL, else its default", () => {
+  const { routes } = buildAppRoutes(slotFiles);
+  const dashboard = matchAppRoute(routes, "/dashboard").route;
+  assert.deepEqual(Object.keys(dashboard.levels[1].slots).sort(), ["analytics", "team"]);
+  const team = slotAt(dashboard, 1, "team", "/dashboard");
+  assert.equal(team.file, "dashboard/@team/page.tsx");
+  assert.deepEqual(team.levels.map((l) => [l.segment, l.layout]), [["@team", "dashboard/@team/layout.tsx"]]);
+  assert.equal(slotAt(dashboard, 1, "analytics", "/dashboard").file, "dashboard/@analytics/page.tsx");
+  assert.deepEqual(dashboard.levels[0].slots, {});
+
+  const settings = matchAppRoute(routes, "/dashboard/settings").route;
+  const teamDefault = slotAt(settings, 1, "team", "/dashboard/settings");
+  assert.equal(teamDefault.file, "dashboard/@team/default.tsx");
+  assert.equal(teamDefault.levels[0].layout, "dashboard/@team/layout.tsx");
+  assert.equal(slotAt(settings, 1, "analytics", "/dashboard/settings").file, "dashboard/@analytics/default.tsx");
+});
+
+test("a slot's page matches the URL whatever its param is named, binding its own params", () => {
+  const { routes } = buildAppRoutes(["layout.tsx", "d/layout.tsx", "d/[id]/page.tsx", "d/@x/[slug]/page.tsx", "d/@x/default.tsx"]);
+  const route = matchAppRoute(routes, "/d/42").route;
+  const x = slotAt(route, 1, "x", "/d/42");
+  assert.equal(x.file, "d/@x/[slug]/page.tsx");
+  assert.deepEqual(x.params, { slug: "42" });
+  assert.deepEqual(x.levels.map((l) => l.paramName), [null, "slug"]);
+});
+
+test("a page only under a slot answers its URL with the slot parent's default.tsx as children", () => {
+  const { routes } = buildAppRoutes(slotFiles);
+  assert.equal(matchAppRoute(routes, "/dashboard/team"), null);
+  const members = matchAppRoute(routes, "/dashboard/members").route;
+  assert.equal(members.file, "dashboard/default.tsx");
+  assert.deepEqual(members.levels.map((l) => l.segment), ["", "dashboard"]);
+  assert.equal(slotAt(members, 1, "team", "/dashboard/members").file, "dashboard/@team/members/page.tsx");
+  assert.equal(slotAt(members, 1, "analytics", "/dashboard/members").file, "dashboard/@analytics/default.tsx");
+  // Without a default.tsx beside the slot, the URL is not a route.
+  const { routes: bare } = buildAppRoutes(["layout.tsx", "a/layout.tsx", "a/page.tsx", "a/@x/b/page.tsx"]);
+  assert.equal(matchAppRoute(bare, "/a/b"), null);
+  // A page of the app answering the URL keeps it.
+  const { routes: dynamic } = buildAppRoutes(["layout.tsx", "a/layout.tsx", "a/default.tsx", "a/[id]/page.tsx", "a/@x/b/page.tsx"]);
+  assert.equal(matchAppRoute(dynamic, "/a/b").route.file, "a/[id]/page.tsx");
+});
+
+test("intercepting pages are not routes; they map to the URL they intercept", () => {
+  const { routes, intercepts } = buildAppRoutes(slotFiles);
+  assert.equal(matchAppRoute(routes, "/photos/1").route.file, "photos/[id]/page.tsx");
+  const feed = matchAppRoute(routes, "/feed").route;
+  assert.equal(slotAt(feed, 1, "modal", "/feed").file, "feed/@modal/default.tsx");
+  const byFile = Object.fromEntries(intercepts.map((i) => [i.file, i]));
+  const photo = byFile["feed/@modal/(...)photos/[id]/page.tsx"];
+  assert.equal(photo.pattern, "/photos/[id]");
+  assert.equal(photo.owner, "feed");
+  assert.equal(photo.slot, "modal");
+  assert.deepEqual(photo.levels.map((l) => l.segment), ["@modal", "(...)photos", "[id]"]);
+  assert.equal(byFile["shop/(group)/items/(.)detail/[id]/page.tsx"].pattern, "/shop/items/detail/[id]");
+  assert.equal(byFile["shop/(group)/items/(.)detail/[id]/page.tsx"].slot, "children");
+  assert.equal(byFile["shop/(group)/items/(.)detail/[id]/page.tsx"].owner, "shop/(group)/items");
+  assert.equal(byFile["shop/(group)/items/(..)cart/page.tsx"].pattern, "/shop/cart");
+});
+
+test("an intercept applies only when navigating from under the intercepting layout", () => {
+  const { routes, intercepts } = buildAppRoutes(slotFiles);
+  const hit = matchIntercept(intercepts, routes, "/photos/7", "/feed");
+  assert.equal(hit.route.pattern, "/feed");
+  assert.equal(hit.intercept.file, "feed/@modal/(...)photos/[id]/page.tsx");
+  assert.deepEqual(hit.params, { id: "7" });
+  assert.equal(hit.ownerIndex, 1);
+  assert.equal(hit.target.route.file, "photos/[id]/page.tsx");
+  assert.equal(matchIntercept(intercepts, routes, "/photos/7", "/dashboard"), null);
+  assert.equal(matchIntercept(intercepts, routes, "/photos/7", null), null);
+  assert.equal(matchIntercept(intercepts, routes, "/feed", "/feed"), null);
 });
