@@ -294,8 +294,10 @@ export async function handlePagesRequest(req, res, opts) {
   const isStatic = !route.isApi && !mod.getServerSideProps && !!mod.getStaticProps;
   // A static page's HTML (and ISR entry) is one per path: only route params.
   const query = isStatic ? { ...params } : { ...searchParamsToQuery(url.searchParams), ...params };
-  // Its asPath is the browser's path without the query, and its entry is keyed by it.
+  // Its asPath is the browser's path without the query; its ISR entry is
+  // keyed by that and the path it rendered (a rewrite may vary the page).
   const pageAsPath = isStatic ? parsed.pathname : asPath;
+  const isrKey = `${pathname}\n${pageAsPath}`;
 
   if (route.isApi) {
     await handleApiRoute(mod, req, res, query);
@@ -335,7 +337,7 @@ export async function handlePagesRequest(req, res, opts) {
     else sendHtml(res, 200, html);
   };
 
-  const cached = isStatic ? isrCache.get(pageAsPath) : undefined;
+  const cached = isStatic ? isrCache.get(isrKey) : undefined;
   if (cached) {
     const fresh = Date.now() < cached.expiresAt;
     setIsrHeaders(res, cached.revalidate, fresh ? "HIT" : "STALE");
@@ -344,8 +346,8 @@ export async function handlePagesRequest(req, res, opts) {
       generate({ background: true })
         .then((entry) => {
           const seconds = isrSeconds(entry.result.revalidate);
-          if (entry.html && seconds) isrCache.set(pageAsPath, { ...entry, revalidate: seconds, expiresAt: Date.now() + seconds * 1000 });
-          else isrCache.delete(pageAsPath);
+          if (entry.html && seconds) isrCache.set(isrKey, { ...entry, revalidate: seconds, expiresAt: Date.now() + seconds * 1000 });
+          else isrCache.delete(isrKey);
         })
         .catch((err) => {
           console.error(err);
@@ -375,7 +377,7 @@ export async function handlePagesRequest(req, res, opts) {
 
   const seconds = isStatic ? isrSeconds(result.revalidate) : null;
   if (seconds) {
-    isrCache.set(pageAsPath, { ...entry, revalidate: seconds, expiresAt: Date.now() + seconds * 1000 });
+    isrCache.set(isrKey, { ...entry, revalidate: seconds, expiresAt: Date.now() + seconds * 1000 });
     setIsrHeaders(res, seconds, "MISS");
   }
   send(entry);
