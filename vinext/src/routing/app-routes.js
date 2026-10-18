@@ -144,37 +144,191 @@ export function buildAppRoutes(files) {
     return level;
   };
 
-  for (const leaf of leaves) {
-    const fsSegments = leaf.dir === "" ? [] : leaf.dir.split("/");
-    if (fsSegments.some((s) => isSlot(s) || isIntercept(s) || isPrivate(s))) continue;
-    const levels = [levelFor("", "")];
-    const urlSegments = [];
-    const patternParts = [];
-    for (let i = 0; i < fsSegments.length; i++) {
-      const seg = fsSegments[i];
-      const level = levelFor(fsSegments.slice(0, i + 1).join("/"), seg);
-      if (!isGroup(seg)) {
-        const decoded = decodeSegment(seg);
-        const parsed = parseSegment(decoded);
-        urlSegments.push(parsed);
-        patternParts.push(decoded);
+  // Every directory under app/ (with one or more files below it), for finding slots.
+  const allDirs = new Set();
+  for (const file of normalized) {
+    const parts = file.split("/").slice(0, -1);
+    for (let i = 1; i <= parts.length; i++) allDirs.add(parts.slice(0, i).join("/"));
+  }
+  const childDir = (dir, seg) => (dir === "" ? seg : `${dir}/${seg}`);
+  const slotNamesOf = (dir) => {
+    const names = [];
+    for (const d of allDirs) {
+      const parts = d.split("/");
+      const seg = parts.pop();
+      if (isSlot(seg) && parts.join("/") === dir) names.push(seg.slice(1));
+    }
+    return names.sort();
+  };
+  const urlPartsOf = (fsSegments) => fsSegments.filter((s) => !isGroup(s) && !isSlot(s)).map(decodeSegment);
+
+  // Levels for the directories below `base` down to `fsSegments`' end.
+  const levelsBelow = (base, fsSegments) => {
+    const levels = [];
+    let dir = base;
+    for (const seg of fsSegments) {
+      dir = childDir(dir, seg);
+      const level = levelFor(dir, seg);
+      if (!isGroup(seg) && !isSlot(seg)) {
+        const parsed = parseSegment(decodeSegment(isIntercept(seg) ? INTERCEPT_RE.exec(seg)[2] : seg));
         if (parsed.name) level.paramName = parsed.name;
       }
       levels.push(level);
     }
+    return levels;
+  };
+
+  // A slot's pages (each with its URL segments below the slot's layout and
+  // its levels from the slot down) and its default.tsx, matched per request.
+  const slotOf = (slotDir) => {
+    const prefix = slotDir + "/";
+    const slotLevel = () => levelFor(slotDir, slotDir.split("/").pop());
+    const pages = [];
+    for (const leaf of leaves) {
+      if (leaf.type !== "page") continue;
+      if (leaf.dir !== slotDir && !leaf.dir.startsWith(prefix)) continue;
+      const below = leaf.dir === slotDir ? [] : leaf.dir.slice(prefix.length).split("/");
+      if (below.some((s) => isSlot(s) || isIntercept(s) || isPrivate(s))) continue;
+      const parts = urlPartsOf(below);
+      pages.push({ pattern: "/" + parts.join("/"), segments: parts.map(parseSegment), file: leaf.file, levels: [slotLevel(), ...levelsBelow(slotDir, below)] });
+    }
+    pages.sort(compareRoutes);
+    const fallback = dirs.get(slotDir)?.default;
+    if (!pages.length && !fallback) return null;
+    return { pages, default: fallback ? { file: fallback, levels: [slotLevel()] } : null };
+  };
+
+  // The levels from the root to the end of `fsSegments`, each with the URL
+  // parts it has consumed and its slots.
+  const chain = (fsSegments) => {
+    const levels = [levelFor("", ""), ...levelsBelow("", fsSegments)];
+    let depth = 0;
+    levels.forEach((level, i) => {
+      if (i > 0 && !isGroup(level.segment)) depth++;
+      level.urlDepth = depth;
+      level.slots = {};
+      for (const name of slotNamesOf(level.dir)) {
+        const slot = slotOf(childDir(level.dir, "@" + name));
+        if (slot) level.slots[name] = slot;
+      }
+    });
+    return levels;
+  };
+  const addRoute = (type, file, fsSegments, urlParts) => {
+    const urlSegments = urlParts.map(parseSegment);
     routes.push({
-      pattern: "/" + patternParts.join("/"),
-      type: leaf.type,
-      file: leaf.file,
+      pattern: "/" + urlParts.join("/"),
+      type,
+      file,
       segments: urlSegments,
-      levels,
+      levels: chain(fsSegments),
       isDynamic: urlSegments.some((s) => s.value === undefined),
     });
+  };
+
+  const intercepts = [];
+  const slotOnly = [];
+  for (const leaf of leaves) {
+    const fsSegments = leaf.dir === "" ? [] : leaf.dir.split("/");
+    if (fsSegments.some(isPrivate)) continue;
+    const k = fsSegments.findIndex(isIntercept);
+    if (k >= 0) {
+      if (leaf.type === "page") intercepts.push(interceptOf(leaf, fsSegments, k));
+      continue;
+    }
+    const j = fsSegments.findIndex(isSlot);
+    if (j >= 0) {
+      if (leaf.type === "page") slotOnly.push({ parent: fsSegments.slice(0, j), urlParts: urlPartsOf(fsSegments) });
+      continue;
+    }
+    addRoute(leaf.type, leaf.file, fsSegments, urlPartsOf(fsSegments));
   }
+  // A page only under a slot makes its URL a route, the slot parent's
+  // default.tsx rendering as children, unless a page of the app answers it.
+  const pageRoutes = routes.slice();
+  for (const { parent, urlParts } of slotOnly) {
+    const pattern = "/" + urlParts.join("/");
+    const fallback = dirs.get(parent.join("/"))?.default;
+    if (!fallback || routes.some((r) => r.pattern === pattern)) continue;
+    if (urlParts.every((p) => parseSegment(p).value !== undefined) && matchAppRoute(pageRoutes.sort(compareRoutes), pattern)) continue;
+    addRoute("page", fallback, parent, urlParts);
+  }
+  for (const entry of intercepts) {
+    entry.levels = levelsBelow(entry.owner, entry.below);
+    delete entry.below;
+  }
+  intercepts.sort(compareRoutes);
   routes.sort(compareRoutes);
   const root = levelFor("", "");
   root.globalError = globalError;
-  return { routes, root };
+  return { routes, root, intercepts };
+}
+
+const INTERCEPT_RE = /^(\(\.\.\.\)|(?:\(\.\.\))+|\(\.\))(.*)$/;
+
+/**
+ * An intercepting page: the URL it intercepts ((.) beside the intercepting
+ * segment, each (..) one URL segment up, (...) from the root), the directory
+ * of the layout it renders inside (`owner`) and the slot it fills there
+ * ("children" when it is not under a slot).
+ */
+function interceptOf(leaf, fsSegments, k) {
+  const [, marker, name] = INTERCEPT_RE.exec(fsSegments[k]);
+  const sourceParts = fsSegments.slice(0, k).filter((s) => !isGroup(s) && !isSlot(s)).map(decodeSegment);
+  const base = marker === "(...)" ? [] : marker === "(.)" ? sourceParts : sourceParts.slice(0, Math.max(0, sourceParts.length - marker.length / 4));
+  const rest = fsSegments.slice(k + 1).filter((s) => !isGroup(s) && !isSlot(s)).map(decodeSegment);
+  const urlParts = [...base, ...(name ? [decodeSegment(name)] : []), ...rest];
+  let j = -1;
+  for (let i = k - 1; i >= 0; i--) {
+    if (isSlot(fsSegments[i])) {
+      j = i;
+      break;
+    }
+  }
+  const ownerEnd = j >= 0 ? j : k;
+  return {
+    pattern: "/" + urlParts.join("/"),
+    segments: urlParts.map(parseSegment),
+    file: leaf.file,
+    owner: fsSegments.slice(0, ownerEnd).join("/"),
+    slot: j >= 0 ? fsSegments[j].slice(1) : "children",
+    below: fsSegments.slice(ownerEnd),
+  };
+}
+
+/**
+ * What a slot renders for the URL parts below its layout: its first page
+ * matching them (with the params they bind), else its default.tsx, else null.
+ */
+export function selectSlot(slot, rest) {
+  for (const page of slot.pages) {
+    const params = matchSegments(page.segments, rest);
+    if (params) return { file: page.file, levels: page.levels, params };
+  }
+  return slot.default ? { ...slot.default, params: {} } : null;
+}
+
+/**
+ * The intercepting page for a client navigation to `pathname` from
+ * `fromPathname`: the route the client is on (which must run through the
+ * intercepting layout), the intercept, its params, the owner's level and the
+ * match a direct load of `pathname` would render (`target`, or null).
+ */
+export function matchIntercept(intercepts, routes, pathname, fromPathname) {
+  if (!fromPathname || !intercepts?.length) return null;
+  const parts = pathname.split("?")[0].split("/").filter(Boolean);
+  for (const intercept of intercepts) {
+    const params = matchSegments(intercept.segments, parts);
+    if (!params) continue;
+    const from = matchAppRoute(routes, fromPathname);
+    if (!from || from.route.type !== "page") continue;
+    const target = matchAppRoute(routes, pathname);
+    if (target?.route === from.route) continue;
+    const ownerIndex = from.route.levels.findIndex((l) => l.dir === intercept.owner);
+    if (ownerIndex < 0) continue;
+    return { route: from.route, fromParams: from.params, intercept, params, ownerIndex, target };
+  }
+  return null;
 }
 
 /**

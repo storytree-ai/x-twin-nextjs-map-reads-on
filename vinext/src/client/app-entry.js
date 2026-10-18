@@ -12,7 +12,7 @@ import {
   encodeReply,
   setServerCallback,
 } from "@vitejs/plugin-rsc/browser";
-import { AppRoot, router, navigate, commitPayload } from "./app-router.js";
+import { AppRoot, router, navigate, commitPayload, requestSource } from "./app-router.js";
 import { rscUrl } from "../shared/rsc-url.js";
 import { redirect as redirectTo } from "../shims/internal/navigation-errors.js";
 
@@ -34,8 +34,10 @@ function inlinePayloadStream() {
   });
 }
 
-async function fetchPayload(url) {
-  const response = await fetch(url, { headers: { Accept: "text/x-component" } });
+async function fetchPayload(url, { from } = {}) {
+  const headers = { Accept: "text/x-component" };
+  if (from) headers["x-vinext-url"] = from;
+  const response = await fetch(url, { headers });
   const redirect = response.headers.get("x-vinext-redirect");
   if (redirect) return { redirect };
   if (response.headers.get("x-vinext-reload") || !(response.headers.get("content-type") || "").includes("text/x-component")) {
@@ -54,7 +56,7 @@ async function callServer(id, args) {
   const body = await encodeReply(args, { temporaryReferences });
   const response = await fetch(rscUrl(window.location.href), {
     method: "POST",
-    headers: { Accept: "text/x-component", "x-rsc-action": id },
+    headers: { Accept: "text/x-component", "x-rsc-action": id, ...(requestSource() ? { "x-vinext-url": requestSource() } : {}) },
     body,
   });
   const redirect = response.headers.get("x-vinext-redirect");
