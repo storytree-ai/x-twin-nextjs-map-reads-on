@@ -176,7 +176,8 @@ async function navigate(method, rawHref, rawAs, options) {
         pageProps = {};
       } else {
         page = json.page;
-        query = json.query;
+        // Static pages' data carries only route params; the URL adds the rest.
+        query = queryFor(page, new URL(href, window.location.href).searchParams, json.query);
         pageProps = json.pageProps;
       }
       Component = await loadPageComponent(page);
