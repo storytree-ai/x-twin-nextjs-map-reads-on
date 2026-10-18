@@ -42,3 +42,15 @@ test("without instrumentation.ts, ready() resolves and reports go nowhere", asyn
   await inst.ready();
   inst.report(new Error("x"), new Request("http://localhost/"), null, "render");
 });
+
+test("the same error thrown on two requests is reported for each", async () => {
+  const seen = [];
+  const inst = createInstrumentation(async () => ({ onRequestError: (_e, request) => seen.push(request.path) }));
+  await inst.ready();
+  const shared = new Error("cached rejection");
+  const route = { file: "api/a/route.ts", pattern: "/api/a" };
+  inst.report(shared, new Request("http://localhost/api/a?n=1"), route, "route");
+  inst.report(shared, new Request("http://localhost/api/a?n=2"), route, "route");
+  await tick();
+  assert.deepEqual(seen, ["/api/a?n=1", "/api/a?n=2"]);
+});

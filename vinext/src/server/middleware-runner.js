@@ -149,12 +149,6 @@ async function proxy(res, req, target, headers) {
 export async function runRequestPipeline(req, res, { pathname, search, isData, isRsc = false, config, loadMiddleware }) {
   const origin = `http://${req.headers.host || "localhost"}`;
   const redirectAs = { isData, isRsc };
-  // trailingSlash: false. A path starting with "//" is left to 404: its
-  // redirect target would name another host.
-  if (!isData && !config.trailingSlash && pathname.length > 1 && pathname.endsWith("/") && !pathname.startsWith("//")) {
-    sendRedirect(res, pathname.replace(/\/+$/, "") + search, 308, redirectAs);
-    return null;
-  }
   // Set as parts: a path starting with "//" must not name another host.
   const url = new URL(origin);
   url.pathname = pathname;
@@ -162,6 +156,13 @@ export async function runRequestPipeline(req, res, { pathname, search, isData, i
   let request = { url, headers: nodeHeaders(req) };
 
   for (const { key, value } of collectHeaders(config.headers, request)) addHeader(res, key, value);
+
+  // trailingSlash: false. A path starting with "//" is left to 404: its
+  // redirect target would name another host.
+  if (!isData && !config.trailingSlash && pathname.length > 1 && pathname.endsWith("/") && !pathname.startsWith("//")) {
+    sendRedirect(res, pathname.replace(/\/+$/, "") + search, 308, redirectAs);
+    return null;
+  }
 
   const redirect = findRedirect(config.redirects, request);
   if (redirect) {

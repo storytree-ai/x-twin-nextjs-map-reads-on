@@ -25,7 +25,10 @@ function fakeRes() {
 }
 
 const config = {
-  headers: [{ source: "/headers-first", headers: [{ key: "X-Source", value: "1" }] }],
+  headers: [
+    { source: "/headers-first", headers: [{ key: "X-Source", value: "1" }] },
+    { source: "/about/", headers: [{ key: "X-Slash", value: "1" }] },
+  ],
   redirects: [{ source: "/redirect-first", destination: "/about", permanent: false }],
   rewrites: { beforeFiles: [{ source: "/gated", has: [{ type: "cookie", key: "mw" }], destination: "/about" }], afterFiles: [], fallback: [] },
 };
@@ -121,6 +124,7 @@ test("a trailing slash redirects (308) to the path without it, keeping the query
   assert.equal(request, null);
   assert.equal(res.statusCode, 308);
   assert.equal(res.headers.location, "/about?foo=bar");
+  assert.equal(res.headers["x-slash"], "1");
   assert.notEqual((await run("/")).request, null);
   assert.notEqual((await run("//example.com/")).request, null);
 });
