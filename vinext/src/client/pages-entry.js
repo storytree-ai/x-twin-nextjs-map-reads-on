@@ -143,6 +143,8 @@ async function navigate(method, rawHref, rawAs, options) {
     if (method) {
       window.history[method]({ __N: true, url: href, as: asPath, options: { shallow, scroll: options.scroll } }, "", asPath);
     }
+    // Out of any React lifecycle that called push(), so flushSync may run.
+    await Promise.resolve();
     const s = appState.router;
     commit({ router: routerFor(s.pathname, s.query, asPath) });
     scrollAfterNavigation(asPath, false);

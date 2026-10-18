@@ -119,8 +119,9 @@ export async function runRequestPipeline(req, res, { pathname, search, isData, c
   if (typeof middleware === "function" && matchesMiddleware(mod.config, request)) {
     const nextRequest = new NextRequest(request.url.href, { method: req.method, headers: request.headers });
     let response;
+    const event = new NextFetchEvent(nextRequest);
     try {
-      response = await middleware(nextRequest, new NextFetchEvent(nextRequest));
+      response = await middleware(nextRequest, event);
     } catch (err) {
       console.error(err);
       res.statusCode = 500;
@@ -128,6 +129,7 @@ export async function runRequestPipeline(req, res, { pathname, search, isData, c
       res.end("Internal Server Error");
       return null;
     }
+    for (const p of event._promises) Promise.resolve(p).catch((err) => console.error(err));
     if (response) {
       const rewrite = response.headers.get("x-middleware-rewrite");
       const next = response.headers.get("x-middleware-next") === "1";
@@ -135,6 +137,7 @@ export async function runRequestPipeline(req, res, { pathname, search, isData, c
       if (!rewrite && !next) {
         if (location && response.status >= 300 && response.status < 400) {
           copyResponseHeaders(response.headers, res, { skipLength: true });
+          if (isData) res.removeHeader("location");
           sendRedirect(res, relativeTo(location, origin), response.status, isData);
         } else {
           await sendWebResponse(res, response);
