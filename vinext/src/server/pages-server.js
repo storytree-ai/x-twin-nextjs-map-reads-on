@@ -249,7 +249,7 @@ async function routeRequest(req, res, { url, pathname, isData }) {
     if (rewritten) {
       request = rewritten;
       match = matchPagesRoute(routes, request.url.pathname);
-      break;
+      if (match) break;
     }
   }
   return { url: request.url, match };

@@ -189,6 +189,7 @@ async function navigate(method, rawHref, rawAs, options) {
   }
   __events.emit("beforeHistoryChange", asPath, { shallow });
   const router = routerFor(page, query, asPath);
+  window.__NEXT_DATA__ = { ...window.__NEXT_DATA__, page, query, props: { ...window.__NEXT_DATA__?.props, pageProps } };
   commit({ Component, pageProps, router }, () => {
     scrollAfterNavigation(asPath, options.scroll);
     __events.emit("routeChangeComplete", asPath, { shallow });
@@ -218,6 +219,8 @@ async function hydrate() {
     manifest.loadApp ? manifest.loadApp() : null,
     loadPageComponent(data.page),
   ]);
+  // _app's own dynamic() imports start when it loads; wait for them too.
+  await flushPreloads();
   const asPath = currentAsPath();
   const router = routerFor(data.page, data.query || {}, asPath);
   appState = { App: appMod?.default || null, Component, pageProps: data.props.pageProps, router };

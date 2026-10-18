@@ -60,10 +60,12 @@ function sendRedirect(res, destination, status, isData) {
   res.end();
 }
 
-async function sendWebResponse(res, response) {
+async function sendWebResponse(res, response, { decoded = false } = {}) {
   res.statusCode = response.status;
   if (response.statusText) res.statusMessage = response.statusText;
   copyResponseHeaders(response.headers, res, { skipLength: true });
+  // fetch() has already decompressed a proxied body.
+  if (decoded) res.removeHeader("content-encoding");
   const body = response.body ? Buffer.from(await response.arrayBuffer()) : null;
   if (body) res.setHeader("Content-Length", body.length);
   res.end(body);
@@ -92,7 +94,7 @@ async function proxy(res, req, target, headers) {
     init.duplex = "half";
   }
   headers.delete("host");
-  await sendWebResponse(res, await fetch(target, init));
+  await sendWebResponse(res, await fetch(target, init), { decoded: true });
 }
 
 /**
