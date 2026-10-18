@@ -78,11 +78,19 @@ async function checkStaticPaths(mod, route, params, pathname) {
   if (!mod.getStaticPaths || !route.isDynamic) return true;
   const result = await mod.getStaticPaths({ locales: undefined, defaultLocale: undefined });
   if (result.fallback !== false) return true;
-  const target = decodeURIComponent(pathname.replace(/\/$/, "") || "/");
+  const normalize = (p) => {
+    const trimmed = p.replace(/\/$/, "") || "/";
+    try {
+      return decodeURIComponent(trimmed);
+    } catch {
+      return trimmed;
+    }
+  };
+  const target = normalize(pathname);
   for (const entry of result.paths || []) {
     const path =
       typeof entry === "string" ? entry : interpolatePattern(route.pattern, entry.params || {})?.path;
-    if (path && decodeURIComponent(path.replace(/\/$/, "") || "/") === target) return true;
+    if (path && normalize(path) === target) return true;
   }
   return false;
 }
@@ -167,7 +175,7 @@ async function renderPageHtml({ App, Document, Component, pageProps, page, query
     ...extraData,
   };
   const headHTML =
-    '<meta name="viewport" content="width=device-width" data-vinext-head=""/>' + __headToHTML(headElements);
+    '<meta name="viewport" content="width=device-width"/>' + __headToHTML(headElements);
   const scripts =
     `<script id="__NEXT_DATA__" type="application/json">${htmlSafeJson(nextData)}</script>` +
     `<script type="module" src="${opts.clientEntryUrl}"></script>`;

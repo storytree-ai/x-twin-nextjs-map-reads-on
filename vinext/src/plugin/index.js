@@ -185,7 +185,7 @@ export default function vinext(options = {}) {
       server.watcher.on("unlink", invalidateManifest);
 
       server.middlewares.use(async (req, res, next) => {
-        if (!isPageRequest(req)) return next();
+        if (!isPageRequest(req, root)) return next();
         try {
           if (appDir) {
             const { handleAppRouterRequest } = await import("../server/app-router/index.js");
@@ -219,14 +219,22 @@ function clientEntryUrl(root) {
   return rel.startsWith("..") ? `/@fs${CLIENT_ENTRY}` : `/${rel}`;
 }
 
-/** Requests the framework renders, as opposed to Vite's modules and assets. */
-export function isPageRequest(req) {
+/**
+ * Requests the framework renders, as opposed to Vite's modules and assets:
+ * a path with a dot in its last segment is a page unless a file (in the root
+ * or public/) answers to it.
+ */
+export function isPageRequest(req, root = process.cwd()) {
   const url = req.url || "/";
   const pathname = url.split("?")[0];
   if (pathname.startsWith("/_next/data/")) return true;
   if (pathname.startsWith("/@") || pathname.startsWith("/__vite") || pathname.startsWith("/node_modules/")) return false;
   if (/[?&](import|raw|url|worker|inline|html-proxy|direct)\b/.test(url)) return false;
   const last = pathname.slice(pathname.lastIndexOf("/") + 1);
-  if (last.includes(".")) return false;
-  return true;
+  if (!last.includes(".")) return true;
+  let decoded = pathname;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {}
+  return ![root, path.join(root, "public")].some((dir) => fs.existsSync(path.join(dir, decoded)));
 }

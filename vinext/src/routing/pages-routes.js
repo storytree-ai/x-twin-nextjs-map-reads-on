@@ -87,7 +87,7 @@ function matchSegments(segments, parts) {
     const part = parts[i];
     if (part === undefined) return null;
     if (seg.kind === STATIC) {
-      if (seg.value !== part) return null;
+      if (seg.value !== part && seg.value !== safeDecode(part)) return null;
     } else {
       params[seg.name] = safeDecode(part);
     }

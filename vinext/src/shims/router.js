@@ -1,4 +1,4 @@
-import { useContext } from "react";
+import { createElement, useContext } from "react";
 import { RouterContext } from "./internal/contexts.js";
 import { formatHref } from "./internal/url.js";
 
@@ -109,7 +109,7 @@ export function useRouter() {
 
 export function withRouter(Component) {
   function WithRouter(props) {
-    return Component({ ...props, router: useRouter() });
+    return createElement(Component, { ...props, router: useRouter() });
   }
   WithRouter.getInitialProps = Component.getInitialProps;
   return WithRouter;

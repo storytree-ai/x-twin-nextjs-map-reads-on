@@ -18,8 +18,6 @@ test("the dev middleware renders pages and leaves Vite's requests alone", () => 
   assert.equal(page("/@vite/client"), false);
   assert.equal(page("/@fs/x/y.js"), false);
   assert.equal(page("/node_modules/vinext/dist/client/pages-entry.js"), false);
-  assert.equal(page("/pages/index.tsx"), false);
-  assert.equal(page("/favicon.ico"), false);
 });
 
 test("the client manifest leaves out API routes and _document", () => {
@@ -31,4 +29,11 @@ test("the client manifest leaves out API routes and _document", () => {
   const server = generatePagesManifest("/app/pages", files, { server: true });
   assert.match(server, /"api\/hello.ts"/);
   assert.match(server, /loadDocument = \(\) => import\("\/app\/pages\/_document.tsx"\)/);
+});
+
+test("dotted page paths render unless a file with that path exists", () => {
+  const root = "/nonexistent-root";
+  assert.equal(isPageRequest({ url: "/posts/v1.2" }, root), true);
+  assert.equal(isPageRequest({ url: "/src/index.js" }, process.cwd()), false);
+  assert.equal(isPageRequest({ url: "/package.json?import" }, process.cwd()), false);
 });

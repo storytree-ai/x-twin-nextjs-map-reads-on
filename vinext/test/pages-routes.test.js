@@ -68,3 +68,8 @@ test("trailing slashes and unknown paths", () => {
   assert.equal(matchPagesRoute(routes, "/nope"), null);
   assert.equal(matchPagesRoute(routes, "/").route.pattern, "/");
 });
+
+test("static segments with non-ASCII names match their encoded form", () => {
+  const routes = buildPagesRoutes(["café.tsx", "[x].tsx"]);
+  assert.equal(matchPagesRoute(routes, "/caf%C3%A9").route.pattern, "/café");
+});
