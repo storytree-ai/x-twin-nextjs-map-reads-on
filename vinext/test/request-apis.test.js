@@ -270,5 +270,27 @@ test("a cacheable page's Cache-Control waits for the whole render", async () => 
   assert.match(cacheControl, /no-store/);
   assert.equal(await new Response(body).text(), "<p>shell</p><p>late</p>");
   const plain = await finalizeCacheControl(new Response("x").body, { revalidate: undefined, dynamic: "auto" }, () => false);
-  assert.equal(plain.cacheControl, null);
+  assert.match(plain.cacheControl, /no-store/);
+});
+
+test("a page without revalidate config is per-request: no-store from the start", async () => {
+  const { resolveSegmentConfig, pageCacheControl } = await import("../src/server/app-router/segment-config.js");
+  assert.match(pageCacheControl(resolveSegmentConfig([{}, {}]), false), /no-store/);
+  assert.equal(pageCacheControl(resolveSegmentConfig([{ dynamic: "force-static" }]), false), null);
+});
+
+test("after() queued while the body streams still runs at its end", async () => {
+  const { createRequestContext, scheduleAfter, queueAfter } = await import("../src/shims/internal/request-context.js");
+  const ctx = createRequestContext(req());
+  let ran = false;
+  let push;
+  const stream = new ReadableStream({ start(c) { push = c; } });
+  const res = scheduleAfter(ctx, new Response(stream));
+  const done = res.text();
+  queueAfter(ctx, () => { ran = true; });
+  push.enqueue(new TextEncoder().encode("x"));
+  push.close();
+  await done;
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(ran, true);
 });

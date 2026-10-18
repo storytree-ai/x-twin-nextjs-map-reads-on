@@ -28,7 +28,9 @@ export function pageCacheControl(config, dynamic) {
   if (typeof revalidate === "number" && revalidate > 0 && revalidate !== Infinity) {
     return `s-maxage=${revalidate}, stale-while-revalidate`;
   }
-  return null;
+  if (config.dynamic === "force-static" || revalidate === Infinity) return null;
+  // No revalidate config: vinext renders the page for every request.
+  return NO_STORE;
 }
 
 /**

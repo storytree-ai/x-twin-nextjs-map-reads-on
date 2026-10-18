@@ -85,9 +85,11 @@ function runAfterTask(task) {
  * end (or now, for a bodiless response). Returns the response to send.
  */
 export function scheduleAfter(ctx, response) {
-  if (!ctx.afterTasks.length) return response;
+  // Components inside Suspense may call after() while the body streams, so a
+  // body is always watched, not only when work is already queued.
   const run = () => {
     const tasks = ctx.afterTasks.splice(0);
+    if (!tasks.length) return;
     setTimeout(() => {
       runWithRequestContext(ctx, () => tasks.forEach(runAfterTask));
     }, 0);
