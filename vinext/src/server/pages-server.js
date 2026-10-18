@@ -71,7 +71,8 @@ function sendHtml(res, status, html) {
 
 /** Resolve a request to its route, honoring the /_next/data/<buildId>/ form. */
 function parseRequest(rawUrl, buildId) {
-  const url = new URL(rawUrl, "http://localhost");
+  // Prefixed, not resolved: a request path starting with "//" stays a path.
+  const url = new URL("http://localhost" + (rawUrl.startsWith("/") ? rawUrl : "/" + rawUrl));
   let pathname = url.pathname;
   let isData = false;
   if (pathname.startsWith(DATA_PREFIX)) {

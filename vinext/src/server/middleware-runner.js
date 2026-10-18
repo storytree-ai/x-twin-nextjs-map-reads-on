@@ -104,7 +104,11 @@ async function proxy(res, req, target, headers) {
  */
 export async function runRequestPipeline(req, res, { pathname, search, isData, config, loadMiddleware }) {
   const origin = `http://${req.headers.host || "localhost"}`;
-  let request = { url: new URL(pathname + search, origin), headers: nodeHeaders(req) };
+  // Set as parts: a path starting with "//" must not name another host.
+  const url = new URL(origin);
+  url.pathname = pathname;
+  url.search = search;
+  let request = { url, headers: nodeHeaders(req) };
 
   for (const { key, value } of collectHeaders(config.headers, request)) addHeader(res, key, value);
 

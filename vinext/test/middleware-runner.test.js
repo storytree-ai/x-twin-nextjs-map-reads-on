@@ -93,3 +93,9 @@ test("api paths outside the matcher skip middleware", async () => {
   assert.equal(request.url.pathname, "/api/hello");
   assert.equal(res.headers["x-mw"], undefined);
 });
+
+test("a path starting with // stays on the request's host", async () => {
+  const { request } = await run("//evil.test/about");
+  assert.equal(request.url.host, "localhost:3000");
+  assert.equal(request.url.pathname, "//evil.test/about");
+});
