@@ -55,3 +55,20 @@ test("restoring leaves a wrapper installed after ours in place", () => {
   sync.restore();
   assert.equal(history.pushState, theirs);
 });
+
+test("a relative URL resolves against the page it was pushed from", () => {
+  const { history, current } = fakeHistory();
+  const saved = globalThis.location;
+  globalThis.location = { get href() { return current().url; } };
+  try {
+    history.replaceState(null, "", "/a/b/");
+    const seen = [];
+    const sync = installHistorySync(history, (url) => seen.push(url));
+    history.pushState(null, "", "../c");
+    assert.equal(current().url, "http://localhost/a/c");
+    assert.deepEqual(seen, ["/a/c"]);
+    sync.restore();
+  } finally {
+    globalThis.location = saved;
+  }
+});
