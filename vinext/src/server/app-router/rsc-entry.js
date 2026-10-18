@@ -107,7 +107,9 @@ function defaultFallback(status) {
 /**
  * The element tree for a route, from the root layout down to `leaf`. Each
  * level wraps its children as Next.js does:
- * Layout > Template > ErrorBoundary > Suspense(loading) > HttpFallbackBoundary > children.
+ * Layout > Template > ErrorBoundary > Suspense(loading) > HttpFallbackBoundary > RedirectBoundary > children,
+ * so a redirect() caught below a layout (a server action's, to the route the
+ * caller stays on) leaves that layout mounted.
  * With `fallback` ({ level, element }), levels below `level` are dropped and
  * that level's children are the fallback element. With `caught`
  * ({ level, serverError }), that level's error boundary starts showing the error.
@@ -131,6 +133,7 @@ async function buildTree(levels, params, leaf, { fallback, pathname, caught, sea
   for (let i = last; i >= 0; i--) {
     const level = levels[i];
     const mod = mods[i];
+    node = createElement(RedirectBoundary, null, node);
     // The root level always has a boundary, with default fallbacks for missing files.
     if (!fallback && ((i === 0 && !nested) || mod.notFound || mod.forbidden || mod.unauthorized)) {
       const fallbackFor = (m, status) => (m ? createElement(m.default) : i === 0 && !nested ? defaultFallback(status) : undefined);
