@@ -13,10 +13,23 @@ import { __headToHTML } from "../shims/head.js";
 import { searchParamsToQuery } from "../shims/internal/url.js";
 import DefaultDocument, { DocumentContext, MAIN_MARKER, HEAD_ID, SCRIPTS_ID } from "../shims/document.js";
 import { handleApiRoute } from "./api-route.js";
+import serverConfig from "virtual:vinext-server-config";
+import { setConfig } from "../shims/config.js";
+import { flushPreloads } from "../shims/dynamic.js";
+import { runRequestPipeline, applyRewrites } from "./middleware-runner.js";
+import { createUnifiedRequestContext, runWithUnifiedRequestContext } from "./render-context.js";
 
 const ReactDOMServer = ReactDOMServerNS.renderToReadableStream ? ReactDOMServerNS : ReactDOMServerNS.default;
 
 const routes = buildPagesRoutes(manifest.routeFiles);
+
+setConfig({
+  publicRuntimeConfig: serverConfig.publicRuntimeConfig || {},
+  serverRuntimeConfig: serverConfig.serverRuntimeConfig || {},
+});
+
+// ISR: rendered getStaticProps pages with a revalidate time, by pathname.
+const isrCache = (globalThis[Symbol.for("vinext.pagesIsrCache")] ??= new Map());
 
 const DATA_PREFIX = "/_next/data/";
 
@@ -58,7 +71,8 @@ function sendHtml(res, status, html) {
 
 /** Resolve a request to its route, honoring the /_next/data/<buildId>/ form. */
 function parseRequest(rawUrl, buildId) {
-  const url = new URL(rawUrl, "http://localhost");
+  // Prefixed, not resolved: a request path starting with "//" stays a path.
+  const url = new URL("http://localhost" + (rawUrl.startsWith("/") ? rawUrl : "/" + rawUrl));
   let pathname = url.pathname;
   let isData = false;
   if (pathname.startsWith(DATA_PREFIX)) {
@@ -119,7 +133,7 @@ async function fetchPageProps({ mod, App, route, params, query, req, res, asPath
     const result = await mod.getStaticProps({ params, locale: undefined, locales: undefined, defaultLocale: undefined });
     if (!result) return { props: {} };
     if (result.redirect || result.notFound) return result;
-    return { props: (await result.props) || {} };
+    return { props: (await result.props) || {}, revalidate: result.revalidate };
   }
   const Component = mod.default;
   const ctx = { req, res, pathname: route.pattern, query, asPath, AppTree: () => null };
@@ -162,10 +176,15 @@ async function renderDocument({ Document, appHtml, headHTML, scripts }) {
  * Render a page to a full HTML document.
  */
 async function renderPageHtml({ App, Document, Component, pageProps, page, query, asPath, opts, extraData }) {
-  const router = createRouter({ pathname: page, route: page, query, asPath, isReady: true });
-  const headElements = [];
+  // A static page knows only its route params until the client has the URL's query.
+  const router = createRouter({ pathname: page, route: page, query, asPath, isReady: !extraData?.gsp });
+  const ctx = createUnifiedRequestContext();
+  const headElements = ctx.ssrHeadChildren;
   const headManager = { add: (els) => headElements.push(...els) };
-  const appHtml = await renderToString(createAppElement({ App, Component, pageProps, router, headManager }));
+  await flushPreloads();
+  const appHtml = await runWithUnifiedRequestContext(ctx, () =>
+    renderToString(createAppElement({ App, Component, pageProps, router, headManager })),
+  );
   const nextData = {
     props: { pageProps },
     page,
@@ -174,8 +193,11 @@ async function renderPageHtml({ App, Document, Component, pageProps, page, query
     isFallback: false,
     ...extraData,
   };
+  const runtimeConfig = serverConfig.publicRuntimeConfig || {};
+  if (Object.keys(runtimeConfig).length) nextData.runtimeConfig = runtimeConfig;
+  const inserted = ctx.serverInsertedHTMLCallbacks.map((cb) => cb() ?? "").join("");
   const headHTML =
-    '<meta name="viewport" content="width=device-width"/>' + __headToHTML(headElements);
+    '<meta name="viewport" content="width=device-width"/>' + __headToHTML(headElements) + inserted;
   const scripts =
     `<script id="__NEXT_DATA__" type="application/json">${htmlSafeJson(nextData)}</script>` +
     `<script type="module" src="${opts.clientEntryUrl}"></script>`;
@@ -206,18 +228,63 @@ export function hasPagesRoute(pathname) {
 }
 
 /**
+ * Route a request through next.config and middleware to a page: the
+ * filesystem is matched after beforeFiles rewrites (static pages first),
+ * then afterFiles, then dynamic pages, then fallback rewrites. Returns
+ * { url, match } or null once the pipeline has answered.
+ */
+async function routeRequest(req, res, { url, pathname, isData }) {
+  let request = await runRequestPipeline(req, res, {
+    pathname,
+    search: url.search,
+    isData,
+    config: serverConfig,
+    loadMiddleware: manifest.loadMiddleware,
+  });
+  if (!request) return null;
+  let match = matchPagesRoute(routes, request.url.pathname);
+  if (match && !match.route.isDynamic) return { url: request.url, match };
+  for (const phase of ["afterFiles", "fallback"]) {
+    if (phase === "fallback" && match) break;
+    const rewritten = await applyRewrites(req, res, serverConfig.rewrites?.[phase], request);
+    if (rewritten === false) return null;
+    if (rewritten) {
+      request = rewritten;
+      match = matchPagesRoute(routes, request.url.pathname);
+      if (match) break;
+    }
+  }
+  return { url: request.url, match };
+}
+
+/** Cache headers and the ISR cache for a getStaticProps page with revalidate. */
+function setIsrHeaders(res, revalidate, state) {
+  res.setHeader("Cache-Control", `s-maxage=${revalidate}, stale-while-revalidate`);
+  res.setHeader("x-vinext-cache", state);
+}
+
+function isrSeconds(revalidate) {
+  return typeof revalidate === "number" && revalidate > 0 ? revalidate : null;
+}
+
+/**
  * Handle a Node request for the Pages Router. Returns false when no page
  * route matched and the caller may try something else.
  */
 export async function handlePagesRequest(req, res, opts) {
-  const { url, pathname, isData, asPath } = parseRequest(req.url, opts.buildId);
-  const match = matchPagesRoute(routes, pathname);
+  const parsed = parseRequest(req.url, opts.buildId);
+  const { isData, asPath } = parsed;
   const [appMod, documentMod] = await Promise.all([
     loadSpecial(manifest.loadApp),
     loadSpecial(manifest.loadDocument),
   ]);
   const App = appMod?.default || null;
   const Document = documentMod?.default || null;
+
+  const routed = await routeRequest(req, res, parsed);
+  if (!routed) return true;
+  const { url, match } = routed;
+  const pathname = url.pathname;
 
   if (!match || (isData && match.route.isApi)) {
     await renderNotFound({ req, res, asPath, isData, opts, App, Document });
@@ -226,7 +293,13 @@ export async function handlePagesRequest(req, res, opts) {
 
   const { route, params } = match;
   const mod = await manifest.loaders[route.file]();
-  const query = { ...searchParamsToQuery(url.searchParams), ...params };
+  const isStatic = !route.isApi && !mod.getServerSideProps && !!mod.getStaticProps;
+  // A static page's HTML (and ISR entry) is one per path: only route params.
+  const query = isStatic ? { ...params } : { ...searchParamsToQuery(url.searchParams), ...params };
+  // Its asPath is the browser's path without the query; its ISR entry is
+  // keyed by that and the path it rendered (a rewrite may vary the page).
+  const pageAsPath = isStatic ? parsed.pathname : asPath;
+  const isrKey = `${pathname}\n${pageAsPath}`;
 
   if (route.isApi) {
     await handleApiRoute(mod, req, res, query);
@@ -238,7 +311,57 @@ export async function handlePagesRequest(req, res, opts) {
     throw new Error(`The default export of pages/${route.file} is not a React component.`);
   }
 
-  const result = await fetchPageProps({ mod, App, route, params, query, req, res, asPath, pathname });
+  const dataFlags = {};
+  if (mod.getServerSideProps) dataFlags.gssp = true;
+  else if (mod.getStaticProps) dataFlags.gsp = true;
+  else if (Component.getInitialProps) dataFlags.gip = true;
+
+  /** Data fetching plus, for HTML (or the ISR cache), the document: { result, html }. */
+  const generate = async ({ background = false } = {}) => {
+    const result = await fetchPageProps({ mod, App, route, params, query, req, res, asPath: pageAsPath, pathname });
+    if ((!background && res.writableEnded) || result.redirect || result.notFound || (isData && !isStatic)) return { result };
+    const html = await renderPageHtml({
+      App,
+      Document,
+      Component,
+      pageProps: result.props,
+      page: route.pattern,
+      query,
+      asPath: pageAsPath,
+      opts,
+      extraData: dataFlags,
+    });
+    return { result, html };
+  };
+
+  const send = ({ result, html }) => {
+    if (isData) sendJson(res, 200, { page: route.pattern, query, pageProps: result.props, ...dataFlags });
+    else sendHtml(res, 200, html);
+  };
+
+  const cached = isStatic ? isrCache.get(isrKey) : undefined;
+  if (cached) {
+    const fresh = Date.now() < cached.expiresAt;
+    setIsrHeaders(res, cached.revalidate, fresh ? "HIT" : "STALE");
+    if (!fresh && !cached.regenerating) {
+      cached.regenerating = true;
+      generate({ background: true })
+        .then((entry) => {
+          const seconds = isrSeconds(entry.result.revalidate);
+          if (entry.html && seconds) isrCache.set(isrKey, { ...entry, revalidate: seconds, expiresAt: Date.now() + seconds * 1000 });
+          else isrCache.delete(isrKey);
+        })
+        .catch((err) => {
+          console.error(err);
+          cached.regenerating = false;
+        });
+    }
+    send(cached);
+    return true;
+  }
+
+  const entry = await generate();
+  const { result } = entry;
   if (res.writableEnded) return true;
 
   if (result.redirect) {
@@ -254,28 +377,11 @@ export async function handlePagesRequest(req, res, opts) {
     return true;
   }
 
-  const pageProps = result.props;
-  const dataFlags = {};
-  if (mod.getServerSideProps) dataFlags.gssp = true;
-  else if (mod.getStaticProps) dataFlags.gsp = true;
-  else if (Component.getInitialProps) dataFlags.gip = true;
-
-  if (isData) {
-    sendJson(res, 200, { page: route.pattern, query, pageProps, ...dataFlags });
-    return true;
+  const seconds = isStatic ? isrSeconds(result.revalidate) : null;
+  if (seconds) {
+    isrCache.set(isrKey, { ...entry, revalidate: seconds, expiresAt: Date.now() + seconds * 1000 });
+    setIsrHeaders(res, seconds, "MISS");
   }
-
-  const html = await renderPageHtml({
-    App,
-    Document,
-    Component,
-    pageProps,
-    page: route.pattern,
-    query,
-    asPath,
-    opts,
-    extraData: dataFlags,
-  });
-  sendHtml(res, 200, html);
+  send(entry);
   return true;
 }

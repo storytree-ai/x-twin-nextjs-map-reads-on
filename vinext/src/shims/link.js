@@ -3,6 +3,14 @@ import { createElement, forwardRef, useContext } from "react";
 import Router from "./router.js";
 import { formatHref } from "./internal/url.js";
 import { AppRouterContext } from "./internal/app-contexts.js";
+import { RouterContext } from "./internal/contexts.js";
+
+/** A relative href ("?page=2", "#top", "child") resolved against the current asPath. */
+function resolveRelative(href, asPath) {
+  if (!href || href.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(href) || asPath == null) return href;
+  const url = new URL(href, "http://n" + asPath);
+  return url.pathname + url.search + url.hash;
+}
 
 function isModifiedEvent(event) {
   const target = event.currentTarget.getAttribute("target");
@@ -32,9 +40,11 @@ const Link = forwardRef(function Link(props, ref) {
     children,
     ...rest
   } = props;
-  const hrefStr = formatHref(href);
-  const asStr = as === undefined || as === null ? hrefStr : formatHref(as);
   const appRouter = useContext(AppRouterContext);
+  const pagesRouter = useContext(RouterContext);
+  const base = appRouter ? null : pagesRouter?.asPath;
+  const hrefStr = resolveRelative(formatHref(href), base);
+  const asStr = as === undefined || as === null ? hrefStr : resolveRelative(formatHref(as), base);
 
   function handleClick(event) {
     if (onClick) onClick(event);

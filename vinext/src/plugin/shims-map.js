@@ -8,12 +8,16 @@ export const NEXT_SHIMS = {
   next: "next.js",
   "next/app": "app.js",
   "next/compat/router": "compat-router.js",
+  "next/config": "config.js",
   "next/document": "document.js",
+  "next/dynamic": "dynamic.js",
   "next/head": "head.js",
   "next/headers": "headers.js",
+  "next/image": "image.js",
   "next/link": "link.js",
   "next/navigation": "navigation.js",
   "next/router": "router.js",
+  "next/script": "script.js",
   "next/server": "server.js",
 };
 

@@ -6,6 +6,7 @@ import { transformCjs } from "./cjs.js";
 import { findNextConfig, loadNextConfig } from "./next-config.js";
 import { fileToPattern, buildPagesRoutes, matchPagesRoute } from "../routing/pages-routes.js";
 import { buildAppRoutes } from "../routing/app-routes.js";
+import { normalizeRewrites } from "../server/request-pipeline.js";
 
 const distDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const SHIMS_DIR = path.join(distDir, "shims");
@@ -25,6 +26,9 @@ const REACT_SERVER_REDIRECTS = new Map(
 
 const MANIFEST_ID = "virtual:vinext-pages-manifest";
 const RESOLVED_MANIFEST_ID = "\0" + MANIFEST_ID;
+const SERVER_CONFIG_ID = "virtual:vinext-server-config";
+const RESOLVED_SERVER_CONFIG_ID = "\0" + SERVER_CONFIG_ID;
+const MIDDLEWARE_NAMES = ["middleware", "proxy"];
 const PAGE_FILE_RE = /\.(tsx|ts|jsx|js|mjs|mts)$/;
 const APP_CODE_RE = /\.(m?[jt]sx?)$/;
 // Vite's default CORS origins; preflightContinue lets OPTIONS reach route handlers.
@@ -63,8 +67,36 @@ function findSpecial(pagesDir, files, name) {
   return file ? path.join(pagesDir, file) : null;
 }
 
+/** middleware.* (or Next 16's proxy.*) in the root or src/, or null. */
+export function findMiddleware(root) {
+  for (const dir of [root, path.join(root, "src")]) {
+    for (const name of MIDDLEWARE_NAMES) {
+      for (const ext of ["ts", "js", "mts", "mjs", "tsx", "jsx"]) {
+        const file = path.join(dir, `${name}.${ext}`);
+        if (fs.existsSync(file)) return file;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The parts of next.config the request pipeline and next/config read, with
+ * redirects()/rewrites()/headers() resolved.
+ */
+export async function resolveServerConfig(nextConfig) {
+  const call = async (fn) => (typeof fn === "function" ? await fn() : undefined);
+  return {
+    redirects: (await call(nextConfig.redirects)) || [],
+    rewrites: normalizeRewrites(await call(nextConfig.rewrites)),
+    headers: (await call(nextConfig.headers)) || [],
+    publicRuntimeConfig: nextConfig.publicRuntimeConfig || {},
+    serverRuntimeConfig: nextConfig.serverRuntimeConfig || {},
+  };
+}
+
 /** Module source listing the pages, with lazy loaders, for one environment. */
-export function generatePagesManifest(pagesDir, files, { server }) {
+export function generatePagesManifest(pagesDir, files, { server, middleware = null }) {
   const routeFiles = files.filter((f) => {
     const pattern = fileToPattern(f);
     return pattern !== null && (server || !(pattern === "/api" || pattern.startsWith("/api/")));
@@ -82,6 +114,7 @@ export function generatePagesManifest(pagesDir, files, { server }) {
     `export const loadDocument = ${doc ? imp(doc) : "null"};`,
     `export const load404 = ${imp(notFound || ERROR_PAGE)};`,
     `export const has404 = ${notFound ? "true" : "false"};`,
+    `export const loadMiddleware = ${server && middleware ? imp(middleware) : "null"};`,
   ];
   return lines.join("\n");
 }
@@ -126,6 +159,7 @@ export default function vinext(options = {}) {
   let pagesDir = null;
   let appDir = null;
   let nextConfig = {};
+  let serverConfig = null;
   let pagesRoutes = null;
   // The App Router needs @vitejs/plugin-rsc, so app/ is looked for up front.
   const initialRoot = path.resolve(options.root || process.cwd());
@@ -145,6 +179,12 @@ export default function vinext(options = {}) {
       } catch (err) {
         console.warn(`[vinext] failed to load ${findNextConfig(root)}: ${err?.message || err}`);
         nextConfig = {};
+      }
+      try {
+        serverConfig = await resolveServerConfig(nextConfig);
+      } catch (err) {
+        console.warn(`[vinext] next.config redirects/rewrites/headers failed: ${err?.message || err}`);
+        serverConfig = await resolveServerConfig({});
       }
       const build =
         env.command === "build" && !appDir
@@ -196,6 +236,7 @@ export default function vinext(options = {}) {
         resolve: {
           alias: nextShimAliases(SHIMS_DIR),
           dedupe: ["react", "react-dom"],
+          tsconfigPaths: true,
         },
         define: envDefines(nextConfig),
         optimizeDeps: {
@@ -220,6 +261,7 @@ export default function vinext(options = {}) {
 
     resolveId(id) {
       if (id === MANIFEST_ID) return RESOLVED_MANIFEST_ID;
+      if (id === SERVER_CONFIG_ID) return RESOLVED_SERVER_CONFIG_ID;
       if (id === APP_MANIFEST_ID) return RESOLVED_APP_MANIFEST_ID;
       if (this.environment?.name === "rsc" && REACT_SERVER_REDIRECTS.has(id)) return REACT_SERVER_REDIRECTS.get(id);
       return null;
@@ -229,7 +271,10 @@ export default function vinext(options = {}) {
       if (id === RESOLVED_MANIFEST_ID) {
         const server = this.environment?.config?.consumer === "server";
         const files = pagesDir ? walk(pagesDir) : [];
-        return generatePagesManifest(pagesDir || root, files, { server });
+        return generatePagesManifest(pagesDir || root, files, { server, middleware: findMiddleware(root) });
+      }
+      if (id === RESOLVED_SERVER_CONFIG_ID) {
+        return `export default ${JSON.stringify(serverConfig || {})};`;
       }
       if (id === RESOLVED_APP_MANIFEST_ID) {
         return generateAppManifest(appDir, appDir ? walk(appDir) : []);
