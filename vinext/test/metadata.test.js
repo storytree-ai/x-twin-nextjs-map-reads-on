@@ -221,3 +221,27 @@ test("metadataBase resolves relative URLs", async () => {
   assert.equal(out[0], "link rel=canonical href=https://base.com/c");
   assert.equal(out[1], "meta property=og:image content=https://base.com/i.png");
 });
+
+test("a string title below a template clears it for the segments under it", async () => {
+  const root = { metadata: { title: { template: "%s | Root", default: "Root" } } };
+  const md = await resolveMetadata([seg(root), seg({ metadata: { title: "Section" } }), seg({ metadata: { title: "Leaf" } })], props);
+  assert.equal(md.title.absolute, "Leaf");
+  const kept = await resolveMetadata([seg(root), seg({ metadata: { description: "no title" } }), seg({ metadata: { title: "Leaf" } })], props);
+  assert.equal(kept.title.absolute, "Leaf | Root");
+});
+
+test("the nearest segment's file icons go ahead of metadata.icons", async () => {
+  const rootFiles = fileMetadata([{ kind: "icon", href: "/icon.png", info: { contentType: "image/png" } }]);
+  const out = await tagsOf([seg({}, rootFiles), seg({ metadata: { icons: { icon: "/page-icon.png", apple: "/a.png" } } })]);
+  assert.deepEqual(out, [
+    "link rel=icon href=/icon.png type=image/png",
+    "link rel=icon href=/page-icon.png",
+    "link rel=apple-touch-icon href=/a.png",
+  ]);
+  const nested = fileMetadata([{ kind: "icon", href: "/x/icon.png", info: {} }]);
+  assert.deepEqual(await tagsOf([seg({}, rootFiles), seg({}, nested)]), ["link rel=icon href=/x/icon.png"]);
+});
+
+test("a keywords string renders as given", async () => {
+  assert.deepEqual(await tagsOf([seg({ metadata: { keywords: "a, b" } })]), ["meta name=keywords content=a, b"]);
+});

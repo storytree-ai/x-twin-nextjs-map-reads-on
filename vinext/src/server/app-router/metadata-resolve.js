@@ -156,7 +156,10 @@ const isPlainObject = (value) => value !== null && typeof value === "object";
  */
 export async function resolveMetadata(segments, props, { origin } = {}) {
   const resolved = { title: null, metadataBase: null };
+  // Templates come from what is resolved so far: a string title clears one.
   let templates = { title: null, openGraph: null, twitter: null };
+  // The nearest segment's icon files, put ahead of metadata.icons at the end.
+  const fileIcons = { icon: [], apple: [] };
   for (const { mod, files } of segments) {
     let md = mod?.metadata;
     if (mod && typeof mod.generateMetadata === "function") md = await mod.generateMetadata(props, Promise.resolve(snapshot(resolved)));
@@ -164,37 +167,40 @@ export async function resolveMetadata(segments, props, { origin } = {}) {
       const explicit = resolved.metadataBase;
       return { explicit, images: explicit || origin };
     };
-    const next = { title: templates.title, openGraph: templates.openGraph, twitter: templates.twitter };
     if (isPlainObject(md)) {
       if (md.metadataBase !== undefined) resolved.metadataBase = md.metadataBase ? resolveUrl(md.metadataBase) : null;
       for (const [key, value] of Object.entries(md)) {
         if (key === "metadataBase") continue;
         if (key === "title") {
           resolved.title = resolveTitle(value, templates.title);
-          next.title = resolved.title.template ?? templates.title;
         } else if (key === "openGraph") {
           resolved.openGraph = resolveOpenGraph(value, base(), templates.openGraph);
-          next.openGraph = resolved.openGraph?.title?.template ?? templates.openGraph;
         } else if (key === "twitter") {
           resolved.twitter = resolveTwitter(value, base(), templates.twitter);
-          next.twitter = resolved.twitter?.title?.template ?? templates.twitter;
         } else if (key === "icons") resolved.icons = resolveIcons(value);
-        else if (key === "keywords") resolved.keywords = typeof value === "string" ? value.split(",").map((k) => k.trim()) : arrayOf(value);
+        else if (key === "keywords") resolved.keywords = arrayOf(value);
         else if (key === "authors") resolved.authors = arrayOf(value);
         else resolved[key] = value;
       }
     }
-    if (files) applyFiles(resolved, md, files, base());
-    templates = next;
+    if (files) applyFiles(resolved, md, files, base(), fileIcons);
+    templates = {
+      title: resolved.title?.template ?? null,
+      openGraph: resolved.openGraph?.title?.template ?? null,
+      twitter: resolved.twitter?.title?.template ?? null,
+    };
+  }
+  if (fileIcons.icon.length || fileIcons.apple.length) {
+    const icons = resolved.icons || { icon: [], apple: [], shortcut: [], other: [] };
+    resolved.icons = { ...icons, icon: [...fileIcons.icon, ...icons.icon], apple: [...fileIcons.apple, ...icons.apple] };
   }
   return postProcess(resolved);
 }
 
-/** A segment's icon files replace the icons above; its images, unless its metadata names its own. */
-function applyFiles(resolved, md, files, base) {
-  if (files.icon.length || files.apple.length) {
-    resolved.icons = { icon: files.icon, apple: files.apple, shortcut: [], other: [] };
-  }
+/** A segment's icon files replace those above; its images join unless its metadata names its own. */
+function applyFiles(resolved, md, files, base, fileIcons) {
+  if (files.icon.length) fileIcons.icon = files.icon;
+  if (files.apple.length) fileIcons.apple = files.apple;
   if (files.manifest) resolved.manifest = files.manifest;
   const own = (key) => isPlainObject(md?.[key]) && md[key].images !== undefined;
   if (files.openGraph.length && !own("openGraph")) {
