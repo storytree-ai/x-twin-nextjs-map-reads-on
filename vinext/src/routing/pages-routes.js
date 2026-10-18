@@ -12,7 +12,7 @@ const DYNAMIC = 1;
 const CATCH_ALL = 2;
 const OPTIONAL_CATCH_ALL = 3;
 
-function parseSegment(seg) {
+export function parseSegment(seg) {
   let m = /^\[\[\.\.\.([^\]]+)\]\]$/.exec(seg);
   if (m) return { kind: OPTIONAL_CATCH_ALL, name: m[1] };
   m = /^\[\.\.\.([^\]]+)\]$/.exec(seg);
@@ -33,7 +33,7 @@ export function fileToPattern(file) {
   return "/" + parts.join("/");
 }
 
-function compareRoutes(a, b) {
+export function compareRoutes(a, b) {
   const len = Math.max(a.segments.length, b.segments.length);
   for (let i = 0; i < len; i++) {
     const sa = a.segments[i];
@@ -66,7 +66,7 @@ export function buildPagesRoutes(files) {
   return routes.sort(compareRoutes);
 }
 
-function safeDecode(s) {
+export function safeDecode(s) {
   try {
     return decodeURIComponent(s);
   } catch {
@@ -74,7 +74,7 @@ function safeDecode(s) {
   }
 }
 
-function matchSegments(segments, parts) {
+export function matchSegments(segments, parts) {
   const params = {};
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];

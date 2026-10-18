@@ -11,7 +11,13 @@ export const NEXT_SHIMS = {
   "next/document": "document.js",
   "next/head": "head.js",
   "next/link": "link.js",
+  "next/navigation": "navigation.js",
   "next/router": "router.js",
+};
+
+/** Shims the rsc environment (react-server condition) loads instead. */
+export const REACT_SERVER_SHIMS = {
+  "next/navigation": "navigation.react-server.js",
 };
 
 function escapeRe(s) {

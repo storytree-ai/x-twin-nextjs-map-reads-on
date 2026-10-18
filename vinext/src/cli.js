@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { pathToFileURL } from "node:url";
+import { parseRscPath } from "./shared/rsc-url.js";
 
 const VITE_CONFIGS = ["vite.config.ts", "vite.config.mts", "vite.config.js", "vite.config.mjs", "vite.config.cjs"];
 
@@ -88,9 +89,52 @@ function serveStatic(dirs, req, res) {
   return false;
 }
 
+/** The built Pages Router server and its client entry URL, or null. */
+async function loadPagesServer(root) {
+  const serverEntry = path.join(root, "dist", "server", "index.js");
+  const manifestFile = path.join(root, "dist", "client", ".vite", "manifest.json");
+  if (!fs.existsSync(serverEntry) || !fs.existsSync(manifestFile)) return null;
+  const viteManifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+  const entry = Object.values(viteManifest).find((c) => c.isEntry && c.name === "vinext-client");
+  if (!entry) return null;
+  const mod = await import(pathToFileURL(serverEntry).href);
+  return { ...mod, clientEntryUrl: "/" + entry.file };
+}
+
+async function startApp(opts, root, rscEntry) {
+  const { toWebRequest, writeWebResponse } = await import("./server/app-router/index.js");
+  const rsc = await import(pathToFileURL(rscEntry).href);
+  const pages = await loadPagesServer(root);
+  const staticDirs = [path.join(root, "dist", "client"), path.join(root, "public")].filter((d) => fs.existsSync(d));
+  const server = http.createServer(async (req, res) => {
+    if (serveStatic(staticDirs, req, res)) return;
+    try {
+      const pathname = (req.url || "/").split("?")[0];
+      if (pages && (pathname.startsWith("/_next/data/") || (!rsc.hasRoute(pathname) && pages.hasPagesRoute(parseRscPath(pathname).pathname)))) {
+        if (pathname.endsWith(".rsc")) {
+          res.setHeader("x-vinext-reload", "1");
+          res.end();
+        } else {
+          await pages.handlePagesRequest(req, res, { dev: false, buildId: "production", clientEntryUrl: pages.clientEntryUrl });
+        }
+        return;
+      }
+      await writeWebResponse(await rsc.default(toWebRequest(req)), res);
+    } catch (err) {
+      console.error(err);
+      if (!res.headersSent) res.statusCode = 500;
+      if (!res.writableEnded) res.end("Internal Server Error");
+    }
+  });
+  const port = opts.port || 3000;
+  server.listen(port, opts.hostname, () => console.log(`vinext ready on http://localhost:${port}`));
+}
+
 async function start(opts) {
   process.env.NODE_ENV = "production";
   const root = process.cwd();
+  const rscEntry = path.join(root, "dist", "rsc", "index.js");
+  if (fs.existsSync(rscEntry)) return startApp(opts, root, rscEntry);
   const clientDir = path.join(root, "dist", "client");
   const serverEntry = path.join(root, "dist", "server", "index.js");
   if (!fs.existsSync(serverEntry)) {

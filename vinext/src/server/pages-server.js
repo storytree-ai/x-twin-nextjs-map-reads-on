@@ -200,6 +200,11 @@ async function renderNotFound({ req, res, asPath, isData, opts, App, Document })
   return sendHtml(res, 404, html);
 }
 
+/** Whether a pages/ route answers the pathname (the App Router server asks first). */
+export function hasPagesRoute(pathname) {
+  return matchPagesRoute(routes, pathname) !== null;
+}
+
 /**
  * Handle a Node request for the Pages Router. Returns false when no page
  * route matched and the caller may try something else.
