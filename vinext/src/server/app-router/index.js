@@ -73,11 +73,11 @@ function isClientRscFetch(req, isRsc) {
  * Route a request through the pipeline to an app/ route (or none: the rsc
  * entry renders the 404), Next.js's order: beforeFiles rewrites, routes that
  * are not dynamic, afterFiles rewrites, dynamic routes, fallback rewrites.
- * `entry` is the rsc entry module; `hasPagesRoute(pathname)` and
- * `handlePages(req, res, url)` hand pages/ routes to the Pages Router, whose own
+ * `entry` is the rsc entry module; `pagesRouteKind(pathname)` ("static",
+ * "dynamic" or null) and `handlePages(req, res, url)` hand pages/ routes to the Pages Router, whose own
  * pipeline is skipped for a request routed here.
  */
-export async function handleAppRouterRequest(req, res, { entry, hasPagesRoute = () => false, handlePages }) {
+export async function handleAppRouterRequest(req, res, { entry, pagesRouteKind = () => null, handlePages }) {
   const rawUrl = req.originalUrl || req.url || "/";
   const query = rawUrl.indexOf("?");
   const rawPath = query === -1 ? rawUrl : rawUrl.slice(0, query);
@@ -95,22 +95,30 @@ export async function handleAppRouterRequest(req, res, { entry, hasPagesRoute = 
   });
   if (!request) return true;
 
-  const kindOf = (p) => entry.routeKind(p) ?? (hasPagesRoute(p) ? "pages" : null);
-  let kind = kindOf(request.url.pathname);
-  if (kind !== "static" && kind !== "pages") {
+  // A static route of either router before a dynamic one; app/ first.
+  const routeOf = (p) => {
+    const app = entry.routeKind(p);
+    const pages = pagesRouteKind(p);
+    if (app === "static") return { pages: false, dynamic: false };
+    if (pages === "static") return { pages: true, dynamic: false };
+    if (app) return { pages: false, dynamic: true };
+    return pages ? { pages: true, dynamic: true } : null;
+  };
+  let route = routeOf(request.url.pathname);
+  if (!route || route.dynamic) {
     for (const phase of ["afterFiles", "fallback"]) {
-      if (phase === "fallback" && kind) break;
+      if (phase === "fallback" && route) break;
       const rewritten = await applyRewrites(req, res, config.rewrites?.[phase], request);
       if (rewritten === false) return true;
       if (rewritten) {
         request = rewritten;
-        kind = kindOf(request.url.pathname);
-        if (kind) break;
+        route = routeOf(request.url.pathname);
+        if (route) break;
       }
     }
   }
 
-  if (kind === "pages") {
+  if (route?.pages) {
     if (isRsc) {
       res.statusCode = 200;
       res.setHeader("x-vinext-reload", "1");

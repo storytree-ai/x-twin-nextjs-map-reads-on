@@ -222,9 +222,10 @@ async function renderNotFound({ req, res, asPath, isData, opts, App, Document })
   return sendHtml(res, 404, html);
 }
 
-/** Whether a pages/ route answers the pathname (the App Router server asks first). */
-export function hasPagesRoute(pathname) {
-  return matchPagesRoute(routes, pathname) !== null;
+/** "static" or "dynamic" for the pages/ route a pathname matches, else null (the App Router server asks). */
+export function pagesRouteKind(pathname) {
+  const match = matchPagesRoute(routes, pathname);
+  return match ? (match.route.isDynamic ? "dynamic" : "static") : null;
 }
 
 /**

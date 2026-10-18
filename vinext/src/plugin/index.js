@@ -316,10 +316,11 @@ export default function vinext(options = {}) {
         }
         server.ws.send({ type: "full-reload" });
       };
-      const hasPagesRoute = (pathname) => {
-        if (!pagesDir) return false;
+      const pagesRouteKind = (pathname) => {
+        if (!pagesDir) return null;
         pagesRoutes ??= buildPagesRoutes(walk(pagesDir));
-        return matchPagesRoute(pagesRoutes, pathname) !== null;
+        const match = matchPagesRoute(pagesRoutes, pathname);
+        return match ? (match.route.isDynamic ? "dynamic" : "static") : null;
       };
       server.watcher.on("add", invalidateManifest);
       server.watcher.on("unlink", invalidateManifest);
@@ -342,7 +343,7 @@ export default function vinext(options = {}) {
           if (appDir && !(req.url || "/").startsWith("/_next/")) {
             const { handleAppRouterRequest } = await import("../server/app-router/index.js");
             const entry = await server.environments.rsc.runner.import(APP_RSC_ENTRY);
-            await handleAppRouterRequest(req, res, { entry, hasPagesRoute, handlePages });
+            await handleAppRouterRequest(req, res, { entry, pagesRouteKind, handlePages });
             return;
           }
           await handlePages(req, res);

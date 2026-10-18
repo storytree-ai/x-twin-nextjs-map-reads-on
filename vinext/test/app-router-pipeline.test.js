@@ -70,14 +70,14 @@ function makeEntry() {
   return { entry, calls };
 }
 
-async function run(url, { headers = {}, hasPagesRoute = () => false } = {}) {
+async function run(url, { headers = {}, pagesRouteKind = () => null } = {}) {
   const { entry, calls } = makeEntry();
   const req = { method: "GET", url, headers: { host: "localhost:3000", ...headers } };
   const res = fakeRes();
   const pages = [];
   await handleAppRouterRequest(req, res, {
     entry,
-    hasPagesRoute,
+    pagesRouteKind,
     handlePages: async (r, _res, routed) => {
       pages.push(routed.pathname);
       res.end("pages");
@@ -135,8 +135,17 @@ test("afterFiles rewrites apply when no route matches", async () => {
 });
 
 test("a rewrite to a pages/ route hands over without running middleware again", async () => {
-  const { calls, pages } = await run("/to-pages", { hasPagesRoute: (p) => p === "/legacy" });
+  const { calls, pages } = await run("/to-pages", { pagesRouteKind: (p) => (p === "/legacy" ? "static" : null) });
   assert.equal(calls.middleware, 1);
   assert.equal(calls.rendered.length, 0);
   assert.deepEqual(pages, ["/legacy"]);
+});
+
+test("afterFiles rewrites apply before a dynamic pages/ route; a static pages/ route comes first", async () => {
+  const dynamicPages = (p) => (p === "/legacy" ? "static" : p.split("/").length === 2 ? "dynamic" : null);
+  const rewritten = await run("/after", { pagesRouteKind: dynamicPages });
+  assert.deepEqual(rewritten.pages, []);
+  assert.equal(rewritten.calls.rendered[0].url, "http://localhost:3000/");
+  const direct = await run("/legacy", { pagesRouteKind: dynamicPages });
+  assert.deepEqual(direct.pages, ["/legacy"]);
 });

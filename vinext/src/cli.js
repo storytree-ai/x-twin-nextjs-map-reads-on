@@ -115,7 +115,7 @@ async function startApp(opts, root, rscEntry) {
         await handlePages(req, res);
         return;
       }
-      await handleAppRouterRequest(req, res, { entry: rsc, hasPagesRoute: pages ? pages.hasPagesRoute : undefined, handlePages });
+      await handleAppRouterRequest(req, res, { entry: rsc, pagesRouteKind: pages ? pages.pagesRouteKind : undefined, handlePages });
     } catch (err) {
       console.error(err);
       if (!res.headersSent) res.statusCode = 500;

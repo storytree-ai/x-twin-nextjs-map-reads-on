@@ -14,6 +14,7 @@ import { httpFallbackStatus, redirectInfo, isNavigationError } from "../../shims
 import { resolveMetadata, renderMetadata } from "./metadata.js";
 import { parseRscPath } from "../../shared/rsc-url.js";
 import { callRouteHandler } from "./route-handler.js";
+import { createInstrumentation } from "../instrumentation.js";
 import { resolveSegmentConfig, finalizeCacheControl } from "./segment-config.js";
 import {
   createRequestContext,
@@ -302,11 +303,6 @@ async function handleRoute(request, match) {
   return callRouteHandler(mod, request, match.params, { file: match.route.file, onError });
 }
 
-/** Whether a page pathname has an app/ route (pages/ handles the rest). */
-export function hasRoute(pathname) {
-  return matchAppRoute(routes, parseRscPath(pathname).pathname) !== null;
-}
-
 /** "static" or "dynamic" for the app/ route a page pathname matches, else null. */
 export function routeKind(pathname) {
   const match = matchAppRoute(routes, pathname);
@@ -318,39 +314,14 @@ export { serverConfig };
 export const loadMiddleware = middlewareLoader;
 
 // instrumentation.ts: register() once per server process, before a request is answered.
-const instrumentation = (globalThis[Symbol.for("vinext.instrumentation")] ??= { ready: null, mod: null });
+const instrumentation = (globalThis[Symbol.for("vinext.instrumentation")] ??= createInstrumentation(loadInstrumentation));
 
 export function instrumentationReady() {
-  instrumentation.ready ??= (async () => {
-    const mod = loadInstrumentation ? await loadInstrumentation() : null;
-    instrumentation.mod = mod;
-    if (typeof mod?.register === "function") await mod.register();
-  })().catch((err) => console.error("[vinext] instrumentation register() failed:", err));
-  return instrumentation.ready;
+  return instrumentation.ready();
 }
 
-const reported = new WeakSet();
-
-/** Tell instrumentation's onRequestError about an unhandled error, once per error. */
 function reportRequestError(error, request, route, routeType) {
-  const onRequestError = instrumentation.mod?.onRequestError;
-  if (typeof onRequestError !== "function") return;
-  if (error && typeof error === "object") {
-    if (reported.has(error)) return;
-    reported.add(error);
-  }
-  const url = new URL(request.url);
-  const { pathname } = parseRscPath(url.pathname);
-  const err = error instanceof Error ? error : new Error(String(error));
-  Promise.resolve()
-    .then(() =>
-      onRequestError(
-        err,
-        { path: pathname + url.search, method: request.method, headers: Object.fromEntries(request.headers) },
-        { routerKind: "App Router", routePath: route ? route.pattern : pathname, routeType },
-      ),
-    )
-    .catch((e) => console.error("[vinext] onRequestError failed:", e));
+  instrumentation.report(error, request, route, routeType);
 }
 
 /** The fetch handler: a Request in, a Response out. */
