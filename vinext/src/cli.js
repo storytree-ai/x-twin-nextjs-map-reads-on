@@ -88,9 +88,29 @@ function serveStatic(dirs, req, res) {
   return false;
 }
 
+async function startApp(opts, root, rscEntry) {
+  const { toWebRequest, writeWebResponse } = await import("./server/app-router/index.js");
+  const handler = (await import(pathToFileURL(rscEntry).href)).default;
+  const staticDirs = [path.join(root, "dist", "client"), path.join(root, "public")].filter((d) => fs.existsSync(d));
+  const server = http.createServer(async (req, res) => {
+    if (serveStatic(staticDirs, req, res)) return;
+    try {
+      await writeWebResponse(await handler(toWebRequest(req)), res);
+    } catch (err) {
+      console.error(err);
+      if (!res.headersSent) res.statusCode = 500;
+      if (!res.writableEnded) res.end("Internal Server Error");
+    }
+  });
+  const port = opts.port || 3000;
+  server.listen(port, opts.hostname, () => console.log(`vinext ready on http://localhost:${port}`));
+}
+
 async function start(opts) {
   process.env.NODE_ENV = "production";
   const root = process.cwd();
+  const rscEntry = path.join(root, "dist", "rsc", "index.js");
+  if (fs.existsSync(rscEntry)) return startApp(opts, root, rscEntry);
   const clientDir = path.join(root, "dist", "client");
   const serverEntry = path.join(root, "dist", "server", "index.js");
   if (!fs.existsSync(serverEntry)) {

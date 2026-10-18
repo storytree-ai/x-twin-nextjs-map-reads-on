@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { NEXT_SHIMS, nextShimAliases } from "../src/plugin/shims-map.js";
+import { NEXT_SHIMS, REACT_SERVER_SHIMS, nextShimAliases } from "../src/plugin/shims-map.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const shimsDir = path.join(here, "..", "src", "shims");
@@ -25,4 +25,10 @@ test("aliases match with and without .js and nothing else", () => {
   assert.equal(resolve("next/link.js"), path.join(shimsDir, NEXT_SHIMS["next/link"]));
   assert.equal(resolve("next/linker"), null);
   assert.equal(resolve("my-next/link"), null);
+});
+
+test("next/navigation has a client shim and a react-server shim", () => {
+  assert.ok(fs.existsSync(path.join(shimsDir, NEXT_SHIMS["next/navigation"])));
+  assert.ok(fs.existsSync(path.join(shimsDir, REACT_SERVER_SHIMS["next/navigation"])));
+  assert.notEqual(NEXT_SHIMS["next/navigation"], REACT_SERVER_SHIMS["next/navigation"]);
 });
