@@ -37,3 +37,14 @@ test("dotted page paths render unless a file with that path exists", () => {
   assert.equal(isPageRequest({ url: "/src/index.js" }, process.cwd()), false);
   assert.equal(isPageRequest({ url: "/package.json?import" }, process.cwd()), false);
 });
+
+test("Vite's CORS handling lets OPTIONS requests through to route handlers", async () => {
+  const { default: vinext } = await import("../src/plugin/index.js");
+  const plugins = [vinext({ appDir: false })].flat();
+  const config = await plugins[0].config({ root: "/nonexistent-root" }, { command: "serve" });
+  assert.equal(config.server.cors.preflightContinue, true);
+  assert.ok(config.server.cors.origin.test("http://localhost:3000"));
+  assert.ok(!config.server.cors.origin.test("https://evil.example"));
+  const custom = await plugins[0].config({ root: "/nonexistent-root", server: { cors: false } }, { command: "serve" });
+  assert.equal(custom.server, undefined);
+});

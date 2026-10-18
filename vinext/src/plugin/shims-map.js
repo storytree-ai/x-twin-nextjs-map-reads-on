@@ -10,9 +10,11 @@ export const NEXT_SHIMS = {
   "next/compat/router": "compat-router.js",
   "next/document": "document.js",
   "next/head": "head.js",
+  "next/headers": "headers.js",
   "next/link": "link.js",
   "next/navigation": "navigation.js",
   "next/router": "router.js",
+  "next/server": "server.js",
 };
 
 /** Shims the rsc environment (react-server condition) loads instead. */

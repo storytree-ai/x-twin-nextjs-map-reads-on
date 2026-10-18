@@ -27,6 +27,8 @@ const MANIFEST_ID = "virtual:vinext-pages-manifest";
 const RESOLVED_MANIFEST_ID = "\0" + MANIFEST_ID;
 const PAGE_FILE_RE = /\.(tsx|ts|jsx|js|mjs|mts)$/;
 const APP_CODE_RE = /\.(m?[jt]sx?)$/;
+// Vite's default CORS origins; preflightContinue lets OPTIONS reach route handlers.
+const DEV_CORS = { origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/, preflightContinue: true };
 
 function walk(dir, base = dir, out = []) {
   if (!fs.existsSync(dir)) return out;
@@ -204,6 +206,7 @@ export default function vinext(options = {}) {
             : [],
         },
         ssr: { noExternal: ["vinext"] },
+        ...(userConfig.server?.cors === undefined ? { server: { cors: DEV_CORS } } : {}),
         ...build,
       };
     },

@@ -32,3 +32,10 @@ test("next/navigation has a client shim and a react-server shim", () => {
   assert.ok(fs.existsSync(path.join(shimsDir, REACT_SERVER_SHIMS["next/navigation"])));
   assert.notEqual(NEXT_SHIMS["next/navigation"], REACT_SERVER_SHIMS["next/navigation"]);
 });
+
+test("next/headers and next/server have shims", () => {
+  for (const mod of ["next/headers", "next/server"]) {
+    assert.ok(NEXT_SHIMS[mod], `${mod} is mapped`);
+    assert.ok(fs.existsSync(path.join(shimsDir, NEXT_SHIMS[mod])), `${mod} shim file exists`);
+  }
+});
