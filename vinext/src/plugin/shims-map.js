@@ -18,6 +18,7 @@ export const NEXT_SHIMS = {
   "next/image": "image.js",
   "next/link": "link.js",
   "next/navigation": "navigation.js",
+  "next/og": "og.js",
   "next/router": "router.js",
   "next/script": "script.js",
   "next/server": "server.js",

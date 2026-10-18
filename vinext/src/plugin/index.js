@@ -5,7 +5,8 @@ import { nextShimAliases, NEXT_SHIMS, REACT_SERVER_SHIMS } from "./shims-map.js"
 import { transformCjs } from "./cjs.js";
 import { findNextConfig, loadNextConfig } from "./next-config.js";
 import { fileToPattern, buildPagesRoutes, matchPagesRoute } from "../routing/pages-routes.js";
-import { buildAppRoutes } from "../routing/app-routes.js";
+import { buildAppRoutes, isAppFile, metadataFileOf } from "../routing/app-routes.js";
+import { staticFileInfo } from "../server/app-router/metadata-routes.js";
 import { normalizeRewrites } from "../server/request-pipeline.js";
 
 const distDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -20,6 +21,9 @@ export const APP_CLIENT_ENTRY = path.join(distDir, "client", "app-entry.js");
 const PAGES_ENV = "vinext_pages";
 const APP_MANIFEST_ID = "virtual:vinext-app-manifest";
 const RESOLVED_APP_MANIFEST_ID = "\0" + APP_MANIFEST_ID;
+// A static metadata file (icon.png, robots.txt, ...) as { data: base64, info }.
+const METADATA_FILE_PREFIX = "virtual:vinext-metadata-file:";
+const RESOLVED_METADATA_FILE_PREFIX = "\0vinext-metadata-file:";
 const REACT_SERVER_REDIRECTS = new Map(
   Object.entries(REACT_SERVER_SHIMS).map(([id, file]) => [path.join(SHIMS_DIR, NEXT_SHIMS[id]), path.join(SHIMS_DIR, file)]),
 );
@@ -34,16 +38,27 @@ const APP_CODE_RE = /\.(m?[jt]sx?)$/;
 // Vite's default CORS origins; preflightContinue lets OPTIONS reach route handlers.
 const DEV_CORS = { origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/, preflightContinue: true };
 
-function walk(dir, base = dir, out = []) {
+const isPageFile = (rel) => PAGE_FILE_RE.test(rel) && !/\.d\.[mc]?ts$/.test(rel);
+
+/** Files under `dir` (paths relative to it) that `include` takes. */
+function walk(dir, include = isPageFile, base = dir, out = []) {
   if (!fs.existsSync(dir)) return out;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(full, base, out);
-    else if (PAGE_FILE_RE.test(entry.name) && !/\.d\.[mc]?ts$/.test(entry.name)) {
-      out.push(path.relative(base, full).split(path.sep).join("/"));
-    }
+    const rel = path.relative(base, full).split(path.sep).join("/");
+    if (entry.isDirectory()) walk(full, include, base, out);
+    else if (include(rel)) out.push(rel);
   }
   return out.sort();
+}
+
+/** The module source of a static metadata file: its bytes, type, size and hash (and alt text). */
+export function metadataFileModule(file) {
+  const bytes = fs.readFileSync(file);
+  const info = staticFileInfo(file, bytes);
+  const altFile = file.replace(/\.[^./]+$/, ".alt.txt");
+  if (/(opengraph|twitter)-image\d*\.[^./]+$/.test(file) && fs.existsSync(altFile)) info.alt = fs.readFileSync(altFile, "utf8").trim();
+  return `export const data = ${JSON.stringify(bytes.toString("base64"))};\nexport const info = ${JSON.stringify(info)};`;
 }
 
 function findPagesDir(root) {
@@ -141,12 +156,17 @@ export function generateAppManifest(appDir, files, { middleware = null, instrume
   for (const route of routes) {
     used.add(route.file);
     route.levels.forEach(collect);
+    for (const level of route.levels) for (const entry of level.metadataFiles) used.add(entry.file);
   }
+  const loader = (f) => {
+    const full = path.join(appDir, f);
+    return metadataFileOf(f)?.isStatic ? METADATA_FILE_PREFIX + full : full;
+  };
   return [
     `export const routes = ${JSON.stringify(routes)};`,
     `export const root = ${JSON.stringify(root)};`,
     `export const loaders = {`,
-    ...[...used].sort().map((f) => `  ${JSON.stringify(f)}: () => import(${JSON.stringify(path.join(appDir, f))}),`),
+    ...[...used].sort().map((f) => `  ${JSON.stringify(f)}: () => import(${JSON.stringify(loader(f))}),`),
     `};`,
     `export const loadMiddleware = ${middleware ? `() => import(${JSON.stringify(middleware)})` : "null"};`,
     `export const loadInstrumentation = ${instrumentation ? `() => import(${JSON.stringify(instrumentation)})` : "null"};`,
@@ -274,6 +294,7 @@ export default function vinext(options = {}) {
       if (id === MANIFEST_ID) return RESOLVED_MANIFEST_ID;
       if (id === SERVER_CONFIG_ID) return RESOLVED_SERVER_CONFIG_ID;
       if (id === APP_MANIFEST_ID) return RESOLVED_APP_MANIFEST_ID;
+      if (id.startsWith(METADATA_FILE_PREFIX)) return RESOLVED_METADATA_FILE_PREFIX + id.slice(METADATA_FILE_PREFIX.length);
       if (this.environment?.name === "rsc" && REACT_SERVER_REDIRECTS.has(id)) return REACT_SERVER_REDIRECTS.get(id);
       return null;
     },
@@ -288,10 +309,15 @@ export default function vinext(options = {}) {
         return `export default ${JSON.stringify(serverConfig || {})};`;
       }
       if (id === RESOLVED_APP_MANIFEST_ID) {
-        return generateAppManifest(appDir, appDir ? walk(appDir) : [], {
+        return generateAppManifest(appDir, appDir ? walk(appDir, isAppFile) : [], {
           middleware: findMiddleware(root),
           instrumentation: findRootModule(root, ["instrumentation"]),
         });
+      }
+      if (id.startsWith(RESOLVED_METADATA_FILE_PREFIX)) {
+        const file = id.slice(RESOLVED_METADATA_FILE_PREFIX.length);
+        this.addWatchFile(file);
+        return metadataFileModule(file);
       }
       return null;
     },

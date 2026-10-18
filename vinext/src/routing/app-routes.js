@@ -17,6 +17,56 @@ const SPECIAL_FILES = {
   default: "default",
 };
 
+// Metadata file conventions: [kind, file name, static extensions, root only].
+// A code extension makes the file generated, a route module.
+const METADATA_FILES = [
+  ["favicon", /^favicon$/, ["ico"], true],
+  ["icon", /^icon\d*$/, ["ico", "jpg", "jpeg", "png", "svg"], false],
+  ["apple", /^apple-icon\d*$/, ["jpg", "jpeg", "png"], false],
+  ["openGraph", /^opengraph-image\d*$/, ["jpg", "jpeg", "png", "gif"], false],
+  ["twitter", /^twitter-image\d*$/, ["jpg", "jpeg", "png", "gif"], false],
+  ["manifest", /^manifest$/, ["json", "webmanifest"], true],
+  ["robots", /^robots$/, ["txt"], true],
+  ["sitemap", /^sitemap$/, ["xml"], false],
+];
+const KIND_ORDER = METADATA_FILES.map(([kind]) => kind);
+const HEAD_KINDS = new Set(["favicon", "icon", "apple", "openGraph", "twitter", "manifest"]);
+// Generated metadata with more than one entry (generateSitemaps, generateImageMetadata).
+export const METADATA_ID_PARAM = "__metadata_id__";
+
+/** The metadata convention of an app/ file (path relative to app/), or null. */
+export function metadataFileOf(file) {
+  const parts = file.split("/");
+  const base = parts.pop();
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return null;
+  const name = base.slice(0, dot);
+  const ext = base.slice(dot + 1);
+  const isCode = CODE_EXT_RE.test(base) && !/\.d\.[mc]?ts$/.test(base);
+  for (const [kind, nameRe, exts, rootOnly] of METADATA_FILES) {
+    if (!nameRe.test(name)) continue;
+    if (rootOnly && parts.length > 0) return null;
+    if (kind === "favicon" && isCode) return null;
+    if (isCode) return { kind, name, isStatic: false };
+    return exts.includes(ext) ? { kind, name, ext, isStatic: true } : null;
+  }
+  return null;
+}
+
+/** Files the app route table takes in: code modules and metadata files. */
+export function isAppFile(file) {
+  return (CODE_EXT_RE.test(file) && !/\.d\.[mc]?ts$/.test(file)) || metadataFileOf(file) !== null;
+}
+
+/** The URL path a metadata file answers at, under its directory's URL path. */
+function metadataPath(dirPath, meta) {
+  const prefix = dirPath === "/" ? "" : dirPath;
+  if (meta.kind === "robots") return "/robots.txt";
+  if (meta.kind === "sitemap") return `${prefix}/sitemap.xml`;
+  if (meta.kind === "manifest") return meta.isStatic ? `/manifest.${meta.ext}` : "/manifest.webmanifest";
+  return meta.isStatic ? `${prefix}/${meta.name}.${meta.ext}` : `${prefix}/${meta.name}`;
+}
+
 const isGroup = (seg) => /^\(.*\)$/.test(seg) && !seg.startsWith("(.");
 const isSlot = (seg) => seg.startsWith("@");
 const isIntercept = (seg) => seg.startsWith("(.");
@@ -39,11 +89,17 @@ function emptyLevel(dir, segment) {
  * layout and not-found boundary render unmatched URLs.
  */
 export function buildAppRoutes(files) {
-  const normalized = files.map((f) => f.replace(/\\/g, "/").replace(/^\/+/, "")).filter((f) => CODE_EXT_RE.test(f) && !/\.d\.[mc]?ts$/.test(f));
+  const normalized = files.map((f) => f.replace(/\\/g, "/").replace(/^\/+/, "")).filter(isAppFile);
   const dirs = new Map();
   const leaves = [];
+  const metadataFiles = [];
   let globalError = null;
   for (const file of normalized) {
+    const meta = metadataFileOf(file);
+    if (meta) {
+      metadataFiles.push({ file, meta });
+      continue;
+    }
     const parts = file.split("/");
     const name = parts.pop().replace(CODE_EXT_RE, "");
     const dir = parts.join("/");
@@ -54,13 +110,40 @@ export function buildAppRoutes(files) {
     if (name === "page" || name === "route") leaves.push({ dir, file, type: name });
   }
 
+  const routes = [];
+  const headFiles = new Map();
+  for (const { file, meta } of metadataFiles) {
+    const dir = file.split("/").slice(0, -1);
+    if (dir.some((s) => isSlot(s) || isIntercept(s) || isPrivate(s))) continue;
+    const urlParts = dir.filter((s) => !isGroup(s)).map(decodeSegment);
+    const dirPath = "/" + urlParts.join("/");
+    const href = metadataPath(dirPath, meta);
+    const add = (pattern) => {
+      const segments = pattern.slice(1).split("/").map(parseSegment);
+      routes.push({ pattern, type: "metadata", file, segments, levels: [], metadata: meta, isDynamic: segments.some((s) => s.value === undefined) });
+    };
+    add(href);
+    // A generated sitemap or image can be many: /sitemap/<id>.xml, /icon/<id>.
+    if (!meta.isStatic && meta.kind !== "robots" && meta.kind !== "manifest") {
+      add(`${meta.kind === "sitemap" ? `${dirPath === "/" ? "" : dirPath}/sitemap` : href}/[${METADATA_ID_PARAM}]`);
+    }
+    if (HEAD_KINDS.has(meta.kind)) {
+      const key = dir.join("/");
+      if (!headFiles.has(key)) headFiles.set(key, []);
+      headFiles.get(key).push({ kind: meta.kind, file, href, isStatic: meta.isStatic });
+    }
+  }
+  for (const list of headFiles.values()) {
+    list.sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  }
+
   const levelFor = (dir, segment) => {
     const level = emptyLevel(dir, segment);
     Object.assign(level, dirs.get(dir) || {});
+    level.metadataFiles = headFiles.get(dir) || [];
     return level;
   };
 
-  const routes = [];
   for (const leaf of leaves) {
     const fsSegments = leaf.dir === "" ? [] : leaf.dir.split("/");
     if (fsSegments.some((s) => isSlot(s) || isIntercept(s) || isPrivate(s))) continue;
