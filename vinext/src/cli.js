@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { pathToFileURL } from "node:url";
+import { parseRscPath } from "./shared/rsc-url.js";
 
 const VITE_CONFIGS = ["vite.config.ts", "vite.config.mts", "vite.config.js", "vite.config.mjs", "vite.config.cjs"];
 
@@ -109,7 +110,7 @@ async function startApp(opts, root, rscEntry) {
     if (serveStatic(staticDirs, req, res)) return;
     try {
       const pathname = (req.url || "/").split("?")[0];
-      if (pages && (pathname.startsWith("/_next/data/") || (!rsc.hasRoute(pathname) && pages.hasPagesRoute(pathname.replace(/\.rsc$/, ""))))) {
+      if (pages && (pathname.startsWith("/_next/data/") || (!rsc.hasRoute(pathname) && pages.hasPagesRoute(parseRscPath(pathname).pathname)))) {
         if (pathname.endsWith(".rsc")) {
           res.setHeader("x-vinext-reload", "1");
           res.end();

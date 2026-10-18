@@ -4,6 +4,7 @@
  * request to the Pages Router.
  */
 import { Readable } from "node:stream";
+import { parseRscPath } from "../../shared/rsc-url.js";
 
 /** A web Request for a Node IncomingMessage. */
 export function toWebRequest(req) {
@@ -53,7 +54,7 @@ export async function handleAppRouterRequest(server, req, res, ctx) {
   if (pathname.startsWith("/_next/")) return false;
   const rsc = server.environments.rsc;
   const entry = await rsc.runner.import(ctx.rscEntry);
-  if (!entry.hasRoute(pathname) && ctx.hasPagesRoute && ctx.hasPagesRoute(pathname.replace(/\.rsc$/, ""))) {
+  if (!entry.hasRoute(pathname) && ctx.hasPagesRoute && ctx.hasPagesRoute(parseRscPath(pathname).pathname)) {
     if (!pathname.endsWith(".rsc")) return false;
     res.statusCode = 200;
     res.setHeader("x-vinext-reload", "1");
